@@ -124,7 +124,7 @@ smoothSplineSmeFits <- function(fits, variables, extend = F){
                   y = x$coefficients[1,])) 
   if(extend){
     mus <- lapply(mus, function(x)
-      predict(x, seq(1/3, 12, by = 1/3)))
+      predict(x, seq(0, 12, by = 1/3)))
   }
   
   mus.y <- unlist(lapply(mus, `[[`, 2))

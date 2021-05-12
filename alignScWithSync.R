@@ -67,8 +67,8 @@ ggsave(filename="../Output/scClockFigs/lag_time_dist.pdf",
        dpi = 300
 )
 
-## Seems like 12 is the right lag (12 * 20 min = 4 hours). Adjust the sc pseudo-time by ~4 hours
-lag.time <- 13
+## Seems like 8-12 is the right lag (12 * 20 min = 4 hours). Adjust the sc pseudo-time by ~4 hours
+lag.time <- 8
 adjusted.time <- (sds.data$time.idx * 1/3) -  sort(unique(sds.data$time.idx) * 1/3)[lag.time]
 neg.ind <- ifelse(adjusted.time < 0, T, F)
 adjusted.time[neg.ind] <- adjusted.time[neg.ind] + (12 + 1/3)

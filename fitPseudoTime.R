@@ -13,7 +13,7 @@ library(parallel)
 ## Fit a pseudo-time curve and align using sync data
 
 ## down-sample the data to make it more manageable
-S.O.bd.filt <- subset(x = S.O.bd, downsample = 800)
+S.O.bd.filt <- subset(x = S.O.bd, downsample = 600)
 
 pc.bd <- getPCA(S.O.bd.filt)
 sds.data <- getSlingShot(S.O.bd.filt, 'pca')
