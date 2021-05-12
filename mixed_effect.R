@@ -7,24 +7,25 @@ library(parallel)
 ## for better trend determination
 
 ## Run once or read from disk
+num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
+
 sync.tc.fits <- mclapply(unique(sync.tc.df$variable), 
                          function(v) 
                            sme(sync.tc.df[sync.tc.df$variable==v,c("y","tme","ind")],
-                               lambda.mu = 10, lambda.v = 10), mc.cores = 16L)
+                               lambda.mu = 10, lambda.v = 10), mc.cores = num.cores)
 
 saveRDS(object = sync.tc.fits ,file = "../Input/setClock/sme_fits_sync_tc_20min.RData")
 
-sync.tc.fits <- readRDS("../Input/setClock/sme_fits_sync_tc_20min.RData")
-
+#sync.tc.fits <- readRDS("../Input/setClock/sme_fits_sync_tc_20min.RData")
 
 
 sc.tc.fits <- mclapply(unique(sc.tc.df.adj$variable),
                     function(v)
                       sme(sc.tc.df.adj[sc.tc.df.adj$variable==v,c("y","tme","ind")],
-                          lambda.mu = 10, lambda.v = 10), mc.cores = 16L)
+                          lambda.mu = 8, lambda.v = 8), mc.cores = num.cores)
 
 saveRDS(object = sync.tc.fits ,file = "../Input/setClock/sme_fits_sc_tc_20min.RData")
-sc.tc.fits  <- readRDS("../Input/setClock/sme_fits_sc_tc_20min.RData")
+#sc.tc.fits  <- readRDS("../Input/setClock/sme_fits_sc_tc_20min.RData")
 
 
 

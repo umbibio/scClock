@@ -9,11 +9,12 @@ library(gam)
 library(parallel)
 #library(sctransform)
 
-
+num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
 ## Fit a pseudo-time curve and align using sync data
 
 ## down-sample the data to make it more manageable
-S.O.bd.filt <- subset(x = S.O.bd, downsample = 600)
+set.seed(100)
+S.O.bd.filt <- subset(x = S.O.bd, downsample = 700)
 
 pc.bd <- getPCA(S.O.bd.filt)
 sds.data <- getSlingShot(S.O.bd.filt, 'pca')
@@ -94,7 +95,7 @@ gam.pval <- mclapply(1:nrow(Y), function(z){
   tmp <- gam(z ~ lo(t), data=d)
   p <- summary(tmp)[4][[1]][1,5]
   p
-}, mc.cores = 16L)
+}, mc.cores = num.cores)
 
 gam.pval <- unlist(gam.pval)
 names(gam.pval) <- rownames(Y)

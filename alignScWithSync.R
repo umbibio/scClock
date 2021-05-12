@@ -11,6 +11,7 @@ library(gam)
 ## Generate the file cell.cycle.genes.df using fitPseudoTime.R and 
 ## tc.logCPM using ReadsyncTimeCourse.R 
 
+num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
 
 ## As a first pass, fit smoothing splines to both sync and sc and align the splines
 sc.tc.df <- cell.cycle.genes.df %>% 
@@ -33,7 +34,7 @@ mu.sync.com <- mclapply(comm.genes, function(v){
   xx <- sync.tc.df[sync.tc.df$variable == v, c("y","tme","ind")]
   mu <-  smooth.spline(x = xx$tme, y = xx$y)
   mu
-}, mc.cores = 16L)
+}, mc.cores = num.cores)
 
 mu.sync.com.grid <- lapply(mu.sync.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
 
@@ -41,7 +42,7 @@ mu.sc.com <- mclapply(comm.genes, function(v){
   xx <- sc.tc.df[sc.tc.df$variable == v, c("y","tme","ind")]
   mu <-  smooth.spline(x = xx$tme, y = xx$y)
   mu
-}, mc.cores = 16L)
+}, mc.cores = num.cores)
 
 mu.sc.com.grid <- lapply(mu.sc.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
 
@@ -50,7 +51,7 @@ cc.sc.sync.genes <- mclapply(c(1:length(comm.genes)), function(i){
   ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F)
   ll <- ll$lag[which.max(ll$acf)]
   ll
-}, mc.cores = 16L)
+}, mc.cores = num.cores)
 
 
 # Histogram with density plot

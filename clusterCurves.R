@@ -161,12 +161,14 @@ sc.tc.mus <- sc.tc.mus %>%
   as.data.frame()
 
 ## Generate the clustes
-sync.hc_dtw <- dtwClustCurves(sync.tc.mus, nclust = 6L)
-plot(sync.hc_dtw, type = 'sc')
-plot(sync.hc_dtw, type = "series", clus = 6L)
-plot(sync.hc_dtw, type = "centroids", clus = 6L)
+num.clust <- 8L
 
-sc.hc_dtw <- dtwClustCurves(sc.tc.mus, nclust = 6L)
+sync.hc_dtw <- dtwClustCurves(sync.tc.mus, nclust = num.clust)
+plot(sync.hc_dtw, type = 'sc')
+plot(sync.hc_dtw, type = "series", clus = 1L)
+plot(sync.hc_dtw, type = "centroids", clus = 1L)
+
+sc.hc_dtw <- dtwClustCurves(sc.tc.mus, nclust = num.clust)
 plot(sc.hc_dtw, type = 'sc')
 plot(sc.hc_dtw, type = "series", clus = 1L)
 plot(sc.hc_dtw, type = "centroids", clus = 1L)
@@ -191,7 +193,7 @@ sc.tc.mus.scale <- sc.tc.mus.scale %>%  as.data.frame() %>%
 ## Add curve cluster info
 sync.hc_dtw.df <- data.frame(GeneID = unique(sync.tc.mus.scale$GeneID), 
                         order = as.numeric(sync.hc_dtw$order),
-                        cluster = cutree(sync.hc_dtw,k = 6L))
+                        cluster = cutree(sync.hc_dtw,k = num.clust))
 sync.tc.mus.scale <- left_join(sync.tc.mus.scale, sync.hc_dtw.df, by = 'GeneID')
 
 sync.tc.mus.scale$GeneID <- factor(as.character(sync.tc.mus.scale$GeneID),
@@ -200,7 +202,7 @@ sync.tc.mus.scale$GeneID <- factor(as.character(sync.tc.mus.scale$GeneID),
 
 sc.hc_dtw.df <- data.frame(GeneID = unique(sc.tc.mus.scale$GeneID), 
                              order = as.numeric(sc.hc_dtw$order),
-                             cluster = cutree(sc.hc_dtw,k = 6L))
+                             cluster = cutree(sc.hc_dtw,k = num.clust))
 
 sc.tc.mus.scale <- left_join(sc.tc.mus.scale, sc.hc_dtw.df, by = 'GeneID')
 
@@ -209,7 +211,7 @@ sc.tc.mus.scale$GeneID <- factor(as.character(sc.tc.mus.scale$GeneID),
 
 
 
-
+## Must order the clusters and curves within cluster for better heatmap
 
 p <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
   geom_tile() + 
