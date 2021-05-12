@@ -127,7 +127,7 @@ dtwClustCurves <- function(tc.mus, nclust = 6L){
   workers <- makeCluster(num.cores)
   invisible(clusterEvalQ(workers, library("dtwclust")))
   registerDoParallel(workers)
-  tc.mus <- lapply(2:ncol(tc.mus), function(i) c(as.numeric(sync.tc.mus[,i])))
+  tc.mus <- lapply(2:ncol(tc.mus), function(i) c(as.numeric(tc.mus[,i])))
   hc_dtw <- tsclust(tc.mus, 
                     type = "h", 
                     k = nclust, 
@@ -170,8 +170,9 @@ plot(sync.hc_dtw, type = "centroids", clus = 1L)
 
 sc.hc_dtw <- dtwClustCurves(sc.tc.mus, nclust = num.clust)
 plot(sc.hc_dtw, type = 'sc')
-plot(sc.hc_dtw, type = "series", clus = 1L)
-plot(sc.hc_dtw, type = "centroids", clus = 1L)
+plot(sc.hc_dtw, type = 'centroids')
+plot(sc.hc_dtw, type = "series", clus = 2L)
+plot(sc.hc_dtw, type = "centroids", clus = 2L)
 
 
 
@@ -211,9 +212,10 @@ sc.tc.mus.scale$GeneID <- factor(as.character(sc.tc.mus.scale$GeneID),
 
 
 
+
 ## Must order the clusters and curves within cluster for better heatmap
 
-p <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
+p1 <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
   geom_tile() + 
   #scale_x_discrete(expand=c(0,0)) +
   ylab("Genes") + xlab("time/cells") + 
@@ -232,5 +234,60 @@ p <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) +
     axis.title.y = element_text(size=14, face="bold")
   )
 
-plot(p)  
+plot(p1)  
 
+p2 <- ggplot(sc.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
+  geom_tile() + 
+  #scale_x_discrete(expand=c(0,0)) +
+  ylab("Genes") + xlab("time/cells") + 
+  #scale_fill_gradientn(colours = hm.palette(10)) +
+  scale_fill_gradientn(colours = viridis::inferno(10)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y  = element_blank(),
+    legend.position = "none") +
+  facet_grid(cluster~., scales = "free",  space='free',
+             labeller=label_wrap_gen(multi_line = TRUE)) +
+  theme(panel.spacing = unit(0.1, "lines")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+plot(p2)  
+
+
+## Cross cluster comparison
+join.hc_dtw.df <- inner_join(sc.hc_dtw.df, sync.hc_dtw.df, by = 'GeneID')
+
+totals <- join.hc_dtw.df %>% group_by(cluster.x) %>% summarise(totals = n())
+overlap <- join.hc_dtw.df %>% group_by(cluster.x, cluster.y) %>% summarise(overlap = n())
+overlap <- left_join(overlap, totals, by = 'cluster.x') %>% mutate(precent = overlap/totals)
+
+colnames(overlap) <- c('sc', 'sync', 'counts', 'totals', 'percent')
+overlap <- overlap %>% dplyr::select(c('sc','sync', 'percent')) %>% 
+  pivot_wider(everything(), names_from = 'sync', values_from = 'percent')
+overlap[is.na(overlap)] <- 0
+overlap <- overlap %>% pivot_longer(-c('sc'), names_to = 'sync', values_to = 'percent')
+overlap$sc <- factor(overlap$sc, levels = unique(sort(overlap$sc)))
+overlap$sync <- factor(overlap$sync, levels = unique(sort(overlap$sync)))
+
+p3 <- ggplot(overlap, aes(x = sc, y = sync, fill = percent)) + 
+  geom_tile() + 
+  #scale_x_discrete(expand=c(0,0)) +
+  ylab("sync") + xlab("sc") + 
+  #scale_fill_gradientn(colours = hm.palette(10)) +
+  scale_fill_gradientn(colours = viridis::inferno(100)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y  = element_blank(),
+    legend.position = "none") +
+  theme(panel.spacing = unit(0.1, "lines")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+plot(p3)  
