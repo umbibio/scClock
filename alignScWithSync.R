@@ -28,7 +28,7 @@ sync.tc.df <- tc.logCPM %>%
 comm.genes <- unique(sync.tc.df$variable)[which(unique(sync.tc.df$variable) %in%
                                                   unique(sc.tc.df$variable))]
 
-
+saveRDS(comm.genes, '../Input/scClock/comm.genes.RData')
 ## Fit smoothing splines to both and sample at regular time points (every 20 min from 0 - 12h)
 mu.sync.com <- mclapply(comm.genes, function(v){
   xx <- sync.tc.df[sync.tc.df$variable == v, c("y","tme","ind")]
@@ -48,11 +48,13 @@ mu.sc.com.grid <- lapply(mu.sc.com, function(mu) predict(mu, seq(0, 12, by = 1/3
 
 ## Calculate the cross-correlation between the fitted smoothing splines
 cc.sc.sync.genes <- mclapply(c(1:length(comm.genes)), function(i){
-  ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F)
+  ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F, lag.max = length(mu.sc.com.grid[[i]]$y))
   ll <- ll$lag[which.max(ll$acf)]
   ll
 }, mc.cores = num.cores)
 
+
+saveRDS(cc.sc.sync.genes, '../Input/scClock/cc.sc.sync.genes.RData')
 
 # Histogram with density plot
 dd <- data.frame(lag = unlist(cc.sc.sync.genes))
@@ -68,8 +70,10 @@ ggsave(filename="../Output/scClockFigs/lag_time_dist.pdf",
        dpi = 300
 )
 
-## Seems like 8-12 is the right lag (12 * 20 min = 4 hours). Adjust the sc pseudo-time by ~4 hours
-lag.time <- 8
+## calculate the optimal lag time
+hh <- hist(dd$lag, nclass = 50)
+lag.time <- hh$breaks[which.max(hh$counts)] + 2
+
 adjusted.time <- (sds.data$time.idx * 1/3) -  sort(unique(sds.data$time.idx) * 1/3)[lag.time]
 neg.ind <- ifelse(adjusted.time < 0, T, F)
 adjusted.time[neg.ind] <- adjusted.time[neg.ind] + (12 + 1/3)
@@ -79,10 +83,33 @@ sds.data$adj.time <-  adjusted.time
 clusters <- paste('C', 1:length(unique(sds.data$adj.time)), sep = '')
 sds.data$cluster <- clusters[as.integer((sds.data$adj.time) * 3 + 1)]
 
+
+## Generate shifted curves
+time.breaks <- seq(1/3, 12 + 1/3, by = 1/3) 
+time.idx <- rep(0, nrow(sds.data))
+
+ind <- which(sds.data$adj.time <= time.breaks[1])
+time.idx[ind] <- 0
+
+for(i in 2:length(time.breaks)){
+  ind <- which(sds.data$adj.time > time.breaks[(i-1)] & sds.data$adj.time <= time.breaks[i])
+  time.idx[ind] <- i - 1
+}
+
+sds.data$adj.time.idx <- time.idx
+
+
+
+sds.data <- sds.data %>%  ungroup() %>%
+  group_by(adj.time.idx) %>% mutate(rep = seq(1:n()))
+
+sds.data <- as.data.frame(sds.data)
 rownames(sds.data) <- sds.data$Sample
 
 ## Add the new clusters as meta-data
 S.O.bd.filt <- AddMetaData(S.O.bd.filt, sds.data)
+
+saveRDS(S.O.bd.filt, '../Input/scClock/S.O.bd.filt.RData')
 
 pc <- S.O.bd.filt[['pca']]@cell.embeddings
 pc <- data.frame(pc) %>% dplyr::mutate(Sample = rownames(pc))
@@ -94,6 +121,8 @@ pc.sds.adj <- left_join(pc, sds.data, by = "Sample")
 
 lvs <- paste('C', unique(sort(as.numeric(gsub('C', '', pc.sds.adj$cluster.y)))), sep = '')
 pc.sds.adj$cluster.y <- factor(pc.sds.adj$cluster.y, levels = lvs)
+
+saveRDS(pc.sds.adj, '../Input/scClock/pc.sds.adj.RData')
 
 ## Plot the new clusters and mark the time start point
 p <- ggplot(pc.sds.adj, aes(x=PC_1,y=PC_2)) +
@@ -145,34 +174,16 @@ p <- ggplot(pc.sds.adj, aes(x=PC_1,y=PC_2)) +
 plot(p)
 ggsave(filename="../Output/scClockFigs/aligned_pseudo_time_BD.pdf",
       plot=p,
-      width = 5, height = 4,
+      width = 5, height = 5,
       units = "in", # other options are "in", "cm", "mm"
       dpi = 300
 )
 
 
 
-## Generate shifted curves
-time.breaks <- seq(1/3, 12 + 1/3, by = 1/3) 
-time.idx <- rep(0, nrow(sds.data))
-
-ind <- which(sds.data$adj.time <= time.breaks[1])
-time.idx[ind] <- 0
-
-for(i in 2:length(time.breaks)){
-  ind <- which(sds.data$adj.time > time.breaks[(i-1)] & sds.data$adj.time <= time.breaks[i])
-  time.idx[ind] <- i - 1
-}
-
-sds.data$adj.time.idx <- time.idx
-
-
-
-sds.data <- sds.data %>%  ungroup() %>%
-  group_by(adj.time.idx) %>% mutate(rep = seq(1:n()))
-
 cell.cycle.genes.df.adj <- left_join(cell.cycle.genes.df, sds.data[,c('Sample', 'adj.time', 
                                                                       'adj.time.idx', 'rep', 'cluster')], by = 'Sample')
+saveRDS(cell.cycle.genes.df.adj, '../Input/scClock/cell.cycle.genes.df.adj.RData')
 
 sc.tc.df.adj <- cell.cycle.genes.df.adj %>% 
   transmute(y = log2.expr, tme = adj.time, ind = rep.y, variable = GeneID)

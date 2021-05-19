@@ -1,124 +1,7 @@
 library(dtwclust)
 library(doParallel)
 library(tidyverse)
-
-#### New method for fitting
-priorCurveClass <- function(v, s.f, cell.cycle.int){
-  
-  ## Fitting the estimated kernel with smooth splines
-  spline.fit <- smooth.spline(x = as.numeric(colnames(s.f$coefficients)), 
-                              y = s.f$coefficients[1,])
-  
-  ## Compute the derivatives of the fitted splines
-  s.0 <- predict(spline.fit, spline.fit$x, deriv=0)
-  s.1 <- predict(spline.fit, spline.fit$x, deriv=1)
-  s.derv <- data.frame(s0=s.0$y, s1=s.1$y)
-  
-  ## Get the location of the exterema
-  locs <- rle(den.sign <- sign(s.derv$s1))
-  
-  ## Maxima
-  inc.ind <- which(locs$values == 1)
-  if(length(inc.ind) > 1){
-    maxima.ind = {}
-    for(i in inc.ind){
-      maxima.ind = c(maxima.ind, sum(locs$lengths[1:i]))
-    }
-    ## Interpolate a point between the location where derivative changes sign
-    maxima = (spline.fit$x[maxima.ind] + spline.fit$x[(maxima.ind + 1)]) / 2
-    maxima = maxima[!is.na(maxima)]
-    ## Get the maximum values
-    maxval = predict(spline.fit, maxima)
-    
-    ## Get the outliers
-    maxima.outliers = which(maxval$y >= quantile(maxval$y, prob = 0.9))
-    
-    ## Peaks for entities of interest
-    entity.x = maxval$x[maxima.outliers]
-    entity.y = maxval$y[maxima.outliers]
-  }else{
-    entity.x <- spline.fit$x[which.max(spline.fit$y)]
-    entity.y <- spline.fit$y[which.max(spline.fit$y)]
-  }
-  
-  ##take the max peak
-  e <- entity.x[which.max(entity.y)]
-  tm.idx <- cell.cycle.int$time.idx[which(cell.cycle.int$time.idx - e >=0)[1]]
-  cc <- paste(unique(cell.cycle.int$cell.cycle[cell.cycle.int$time.idx == tm.idx]),
-              collapse = '_')
-  sub.cc <- paste(unique(cell.cycle.int$sub.cell.cycle[cell.cycle.int$time.idx == tm.idx]),
-                  collapse = '_')
-  
-  L <- data.frame(GeneID = v,
-                  entity.x = entity.x[which.max(entity.y)],
-                  entity.y = entity.y[which.max(entity.y)],
-                  class1 = cc,
-                  class2 = sub.cc)
-  
-  
-  return(L)
-}
-
-classifyCurves <- function(v, s.f, cell.cycle.int){
-  
-  ## Fitting the estimated kernel with smooth splines
-  spline.fit <- smooth.spline(x = as.numeric(colnames(s.f$coefficients)), 
-                              y = s.f$coefficients[1,])
-  
-  ## Compute the derivatives of the fitted splines
-  s.0 <- predict(spline.fit, spline.fit$x, deriv=0)
-  s.1 <- predict(spline.fit, spline.fit$x, deriv=1)
-  s.derv <- data.frame(s0=s.0$y, s1=s.1$y)
-  
-  ## Get the location of the extrema
-  locs <- rle(den.sign <- sign(s.derv$s1))
-  
-  ## Maxima
-  inc.ind <- which(locs$values == 1)
-  if(length(inc.ind) > 1){
-    maxima.ind = {}
-    for(i in inc.ind){
-      maxima.ind = c(maxima.ind, sum(locs$lengths[1:i]))
-    }
-    ## Interpolate a point between the location where derivative changes sign
-    maxima = (spline.fit$x[maxima.ind] + spline.fit$x[(maxima.ind + 1)]) / 2
-    maxima = maxima[!is.na(maxima)]
-    ## Get the maximum values
-    maxval = predict(spline.fit, maxima)
-    
-    ## Get the outliers
-    maxima.outliers = which(maxval$y >= quantile(maxval$y, prob = 0.9))
-    
-    ## Peaks for entities of interest
-    entity.x = maxval$x[maxima.outliers]
-    entity.y = maxval$y[maxima.outliers]
-  }else{
-    entity.x <- spline.fit$x[which.max(spline.fit$y)]
-    entity.y <- spline.fit$y[which.max(spline.fit$y)]
-  }
-  
-  
-  ind.e <- {}
-  for(e in entity.x){
-    ind.e <- c(ind.e, which(cell.cycle.int$time.idx - e >=0)[1])
-  }
-  
-  if(length(ind.e) > 0){
-    L <- data.frame(GeneID = rep(v, length(ind.e)),
-                    entity.x = entity.x,
-                    entity.y = entity.y,
-                    class1 = cell.cycle.int$cell.cycle[ind.e],
-                    class2 = cell.cycle.int$sub.cell.cycle[ind.e])
-  }else{
-    L <- data.frame(GeneID = v,
-                    entity.x = NA,
-                    entity.y = NA,
-                    class1 = NA,
-                    class2 = NA)
-  }
-  
-  return(L)
-}
+library(tidytext)
 
 dtwClustCurves <- function(tc.mus, nclust = 6L){
   ## Calculate clusters in parallel
@@ -146,27 +29,77 @@ dtwClustCurves <- function(tc.mus, nclust = 6L){
   return(hc_dtw)
 }
 
+withinCalssReOrder <- function(tc.mus){
+  clust.ord <- tc.mus %>% dplyr::select(GeneID, cluster) %>% distinct() %>% 
+    group_by(cluster) %>% summarise(GeneSet = list(GeneID)) 
+  
+  clusters <- unique(tc.mus$cluster)
+  hc_eucledian.df <- {}
+  for(i in 1:length(clusters)){
+    class.i <- tc.mus %>% dplyr::filter(cluster == clusters[i]) %>% dplyr::select(GeneID, y, t) %>%
+      pivot_wider(names_from = GeneID, values_from = y) %>% as.data.frame()
+    
+    
+    ## Hierarchical clustering with Eucledian distance
+    hc_eucledian <- hclust(dist(t(as.matrix(class.i[,-1] ))), method = "ward.D")
+    hc_eucledian.df <- rbind(hc_eucledian.df, 
+                             data.frame(GeneID = colnames(class.i[,-1]), 
+                                        hc_eucledian.order = hc_eucledian$order,
+                                        hc_eucledian.cluster = cutree(hc_eucledian,k = 10)))
+  }
+  
+  return(hc_eucledian.df)
+}
 
-## Get the sme mean splies
+## Calculate th overlap of clusters with marker genes and re-order clusters accordingly
+matchClustersToPhase <- function(hc_dtw.df, markers.sig){
+  join.hc_dtw.df <- inner_join(hc_dtw.df, markers.sig, by = 'GeneID')
+  totals <- join.hc_dtw.df %>% group_by(cluster.x) %>% summarise(totals = n())
+  overlap <- join.hc_dtw.df %>% group_by(cluster.x, cluster.y) %>% summarise(overlap = n())
+  overlap <- left_join(overlap, totals, by = 'cluster.x') %>% mutate(precent = overlap/totals)
+  
+  colnames(overlap) <- c('cluster', 'markers', 'counts', 'totals', 'percent')
+  overlap <- overlap %>% dplyr::select(c('cluster','markers', 'percent')) %>% 
+    pivot_wider(names_from = 'markers', values_from = 'percent')
+  overlap[is.na(overlap)] <- 0
+  overlap <- overlap %>% pivot_longer(-c('cluster'), names_to = 'markers', values_to = 'percent')
+  
+  overlap$markers[overlap$markers == 0] <- 'G1a'
+  overlap$markers[overlap$markers == 3] <- 'G1b'
+  overlap$markers[overlap$markers == 2] <- 'G1c'
+  overlap$markers[overlap$markers == 1] <- 'S/M'
+  
+ 
+  overlap$cluster <- factor(overlap$cluster, levels = unique(sort(overlap$cluster)))
+  overlap$markers <- factor(overlap$markers, levels = unique(sort(overlap$markers)))
+  
+  return(overlap)
+  
+}
+
+
+## Get the sme mean splines and filter to include marker genes only
 sync.tc.mus <- smoothSplineSmeFits(sync.tc.fits, unique(sync.tc.df$variable), extend = T)
 colnames(sync.tc.mus) <- c('GeneID', 't', 'y')
-sync.tc.mus <- sync.tc.mus %>% 
+sync.tc.mus <- sync.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) %>%
   pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
   as.data.frame()
 
 sc.tc.mus <- smoothSplineSmeFits(sc.tc.fits, unique(sc.tc.df$variable), extend = F)
 colnames(sc.tc.mus) <- c('GeneID', 't', 'y')
-sc.tc.mus <- sc.tc.mus %>% 
+sc.tc.mus <- sc.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) %>%
   pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
   as.data.frame()
 
-## Generate the clustes
-num.clust <- 8L
+## Generate the clusters
+num.clust <- 4L
 
 sync.hc_dtw <- dtwClustCurves(sync.tc.mus, nclust = num.clust)
 plot(sync.hc_dtw, type = 'sc')
 plot(sync.hc_dtw, type = "series", clus = 1L)
 plot(sync.hc_dtw, type = "centroids", clus = 1L)
+
+saveRDS(sync.hc_dtw, '../Input/scClock/sync.hc_dtw.RData')
 
 sc.hc_dtw <- dtwClustCurves(sc.tc.mus, nclust = num.clust)
 plot(sc.hc_dtw, type = 'sc')
@@ -174,7 +107,7 @@ plot(sc.hc_dtw, type = 'centroids')
 plot(sc.hc_dtw, type = "series", clus = 2L)
 plot(sc.hc_dtw, type = "centroids", clus = 2L)
 
-
+saveRDS(sc.hc_dtw, '../Input/scClock/sc.hc_dtw.RData')
 
 ## Scale the data for heatmaps
 sync.tc.mus.scale <- sync.tc.mus
@@ -212,10 +145,26 @@ sc.tc.mus.scale$GeneID <- factor(as.character(sc.tc.mus.scale$GeneID),
 
 
 
+## Reorder the genes within each cluster.
+hc_eucledian.df <- withinCalssReOrder(sync.tc.mus.scale) 
+sync.tc.mus.scale <- left_join(sync.tc.mus.scale, hc_eucledian.df, by = 'GeneID')
+sync.tc.mus.scale <- sync.tc.mus.scale %>% mutate(cluster = as.factor(cluster),
+                                                  GeneID = reorder_within(GeneID, hc_eucledian.order, cluster)) 
 
-## Must order the clusters and curves within cluster for better heatmap
 
-p1 <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
+hc_eucledian.df <- withinCalssReOrder(sc.tc.mus.scale) 
+sc.tc.mus.scale <- left_join(sc.tc.mus.scale, hc_eucledian.df, by = 'GeneID')
+sc.tc.mus.scale <- sc.tc.mus.scale %>% mutate(cluster = as.factor(cluster),
+                                                  GeneID = reorder_within(GeneID, hc_eucledian.order, cluster)) 
+
+## map the clusteres
+sync.overlap <- matchClustersToPhase(sync.hc_dtw.df, BD.markers.sig)
+sc.overlap <- matchClustersToPhase(sc.hc_dtw.df, BD.markers.sig)
+
+sync.phase.match <- sync.overlap %>% group_by(cluster) %>% summarize(phase = markers[which.max(percent)])
+sync.tc.mus.scale <- left_join(sync.tc.mus.scale, sync.phase.match, by = 'cluster')
+
+p1 <- ggplot(sync.tc.mus.scale, aes(x = t, y = reorder_within(GeneID, order, phase), fill = y)) + 
   geom_tile() + 
   #scale_x_discrete(expand=c(0,0)) +
   ylab("Genes") + xlab("time/cells") + 
@@ -226,7 +175,7 @@ p1 <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) +
     axis.ticks = element_blank(),
     axis.text.y  = element_blank(),
     legend.position = "none") +
-  facet_grid(cluster~., scales = "free",  space='free',
+  facet_grid(phase~., scales = "free",  space='free',
              labeller=label_wrap_gen(multi_line = TRUE)) +
   theme(panel.spacing = unit(0.1, "lines")) + 
   theme(
@@ -236,7 +185,20 @@ p1 <- ggplot(sync.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) +
 
 plot(p1)  
 
-p2 <- ggplot(sc.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) + 
+
+ggsave(filename="../Output/scClockFigs/curve_cluster_heatmap_sync.pdf",
+       plot=p1,
+       width = 5, height = 5,
+       units = "in", # other options are "in", "cm", "mm"
+       dpi = 300
+)
+
+sc.overlap <- matchClustersToPhase(sc.hc_dtw.df, BD.markers.sig)
+
+sc.phase.match <- sc.overlap %>% group_by(cluster) %>% summarize(phase = markers[which.max(percent)])
+sc.tc.mus.scale <- left_join(sc.tc.mus.scale, sc.phase.match, by = 'cluster')
+
+p2 <- ggplot(sc.tc.mus.scale, aes(x = t, y = reorder_within(GeneID, order, phase), fill = y)) + 
   geom_tile() + 
   #scale_x_discrete(expand=c(0,0)) +
   ylab("Genes") + xlab("time/cells") + 
@@ -247,7 +209,7 @@ p2 <- ggplot(sc.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) +
     axis.ticks = element_blank(),
     axis.text.y  = element_blank(),
     legend.position = "none") +
-  facet_grid(cluster~., scales = "free",  space='free',
+  facet_grid(phase~., scales = "free",  space='free',
              labeller=label_wrap_gen(multi_line = TRUE)) +
   theme(panel.spacing = unit(0.1, "lines")) + 
   theme(
@@ -258,32 +220,24 @@ p2 <- ggplot(sc.tc.mus.scale, aes(x = t, y = GeneID, fill = y)) +
 plot(p2)  
 
 
-## Cross cluster comparison
-join.hc_dtw.df <- inner_join(sc.hc_dtw.df, sync.hc_dtw.df, by = 'GeneID')
+ggsave(filename="../Output/scClockFigs/curve_cluster_heatmap_sc.pdf",
+       plot=p2,
+       width = 5, height = 5,
+       units = "in", # other options are "in", "cm", "mm"
+       dpi = 300
+)
 
-totals <- join.hc_dtw.df %>% group_by(cluster.x) %>% summarise(totals = n())
-overlap <- join.hc_dtw.df %>% group_by(cluster.x, cluster.y) %>% summarise(overlap = n())
-overlap <- left_join(overlap, totals, by = 'cluster.x') %>% mutate(precent = overlap/totals)
-
-colnames(overlap) <- c('sc', 'sync', 'counts', 'totals', 'percent')
-overlap <- overlap %>% dplyr::select(c('sc','sync', 'percent')) %>% 
-  pivot_wider(everything(), names_from = 'sync', values_from = 'percent')
-overlap[is.na(overlap)] <- 0
-overlap <- overlap %>% pivot_longer(-c('sc'), names_to = 'sync', values_to = 'percent')
-overlap$sc <- factor(overlap$sc, levels = unique(sort(overlap$sc)))
-overlap$sync <- factor(overlap$sync, levels = unique(sort(overlap$sync)))
-
-p3 <- ggplot(overlap, aes(x = sc, y = sync, fill = percent)) + 
+p3 <- ggplot(sc.overlap, aes(x = cluster, y = markers, fill = percent)) + 
   geom_tile() + 
   #scale_x_discrete(expand=c(0,0)) +
-  ylab("sync") + xlab("sc") + 
+  ylab("markers") + xlab("clusters") + theme_bw() + 
   #scale_fill_gradientn(colours = hm.palette(10)) +
-  scale_fill_gradientn(colours = viridis::inferno(100)) +
-  theme(
-    axis.text.x = element_blank(),
-    axis.ticks = element_blank(),
-    axis.text.y  = element_blank(),
-    legend.position = "none") +
+  scale_fill_gradientn(colours = viridis::inferno(1000)) +
+  # theme(
+  #   axis.text.x = element_blank(),
+  #   axis.ticks = element_blank(),
+  #   axis.text.y  = element_blank(),
+  #   legend.position = "none") +
   theme(panel.spacing = unit(0.1, "lines")) + 
   theme(
     axis.title.x = element_text(size=14, face="bold"),
@@ -291,3 +245,4 @@ p3 <- ggplot(overlap, aes(x = sc, y = sync, fill = percent)) +
   )
 
 plot(p3)  
+

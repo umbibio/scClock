@@ -46,10 +46,33 @@ getPCA <- function(S.O){
   return(pc)
 }
 
+getPrinCurve <- function(pc.db){
+  x <- as.matrix(pc.bd[,c(1,2)])
+  fit <- principal_curve(x)
+  pt <- fit$lambda
+  
+  
+  
+  
+  ## reversing the order of time
+  pt <- max(pt) - pt
+  pt <- (pt - min(pt))/(max(pt) - min(pt))
+  cell.ord <- fit$ord[seq(length(fit$ord), 1, by = -1)]
+  
+  
+  s.data <- data.frame(Sample = rownames(fit$s), 
+                       cell.ord = cell.ord,
+                       pt = pt,
+                       sc1 = fit$s[,1], 
+                       sc2 = fit$s[,2])
+  
+  return(s.data)
+}
+
 getSlingShot <- function(S.O, method = 'pca'){
   sds <- slingshot(Embeddings(S.O, method), 
                    clusterLabels = S.O$seurat_clusters, 
-                   start.clus = 1, stretch = 2)
+                   start.clus = 0, end.clus = 3, stretch = 2)
   
   pt <- slingPseudotime(sds)
   
@@ -140,7 +163,7 @@ smoothSplineSmeFits <- function(fits, variables, extend = F){
 }
 
 
-plot.sme <-function(fit, v){
+plot.sme <-function(fit, v, conf = T){
   mu <- spline(x = as.numeric(colnames(fit$coefficients)), 
                y = fit$coefficients[1,], n = 500, 
                method = "natural")
@@ -154,13 +177,15 @@ plot.sme <-function(fit, v){
   ylim <- range(fit$data$y, mu$y, sapply(fs, "[[", "y"))
   xlim <- range(as.numeric(colnames(fit$coefficients)))
   mu.variance <- diag(vcov(fit))
-  upper.band <- spline(x = as.numeric(colnames(fit$coefficients)), 
-                       y = fit$coefficients[1, ] + 1.96 * sqrt(mu.variance), 
-                       method = "natural", n = 500)
-  lower.band <- spline(x = as.numeric(colnames(fit$coefficients)), 
-                       y = fit$coefficients[1, ] - 1.96 * sqrt(mu.variance), 
-                       method = "natural", n = 500)
-  ylim <- range(ylim, upper.band$y, lower.band$y)
+  if(conf){
+    upper.band <- spline(x = as.numeric(colnames(fit$coefficients)), 
+                         y = fit$coefficients[1, ] + 1.96 * sqrt(mu.variance), 
+                         method = "natural", n = 500)
+    lower.band <- spline(x = as.numeric(colnames(fit$coefficients)), 
+                         y = fit$coefficients[1, ] - 1.96 * sqrt(mu.variance), 
+                         method = "natural", n = 500)
+    ylim <- range(ylim, upper.band$y, lower.band$y)
+  }
   
   plot(x = fit$data$tme, y = fit$data$y, ylim = ylim, xlim = xlim, xaxt="none",
        xlab = '', ylab = '', col = 'black', cex = 1.2, main = '',
@@ -174,12 +199,14 @@ plot.sme <-function(fit, v){
   lines(mu, lwd = 2, col = 'red')
   
   col.meanCurve.rgb <- col2rgb('red')
-  polygon(x = c(upper.band$x, rev(lower.band$x)), 
-          y = c(upper.band$y,rev(lower.band$y)), 
-          col = rgb(col.meanCurve.rgb[1], 
-                    col.meanCurve.rgb[2], col.meanCurve.rgb[3], alpha = 125, 
-                    maxColorValue = 255), border = NA)
-
+  if(conf){
+    polygon(x = c(upper.band$x, rev(lower.band$x)), 
+            y = c(upper.band$y,rev(lower.band$y)), 
+            col = rgb(col.meanCurve.rgb[1], 
+                      col.meanCurve.rgb[2], col.meanCurve.rgb[3], alpha = 125, 
+                      maxColorValue = 255), border = NA)
+  }
+ 
   axis(1, seq(min(fit$data$tme), max(fit$data$tme), length = 13),
        labels = seq(0, 12), font=2)
   mtext(side=1, line=2, "Time (h)", col="black", font=2,cex=1.1)

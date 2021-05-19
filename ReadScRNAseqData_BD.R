@@ -32,7 +32,9 @@ bdiv.pheno$spp <- 'BDiv'
 
 
 # Set initial Seurat clusters
-S.O.bd <- CreateSeuratObject(counts = bd.expr)
+S.O.bd <- CreateSeuratObject(counts = bd.expr, min.cells = 10, min.features = 100)
+#S.O.bd <- CreateSeuratObject(counts = bd.expr)
+
 #VlnPlot(S.O.bd, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
 #FeatureScatter(S.O.bd, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
 
@@ -51,3 +53,23 @@ colnames(bdiv.pheno) <- c('Sample', 'spp', 'cluster', 'cells', 'NAME')
 
 bd.ind <- match(colnames(bd.expr), bdiv.pheno$X)
 colnames(bd.expr) <- bdiv.pheno$NAME[bd.ind]
+
+## down-sample the data to make it more manageable
+set.seed(100)
+S.O.bd.filt <- subset(x = S.O.bd, downsample = 800)
+
+
+# ## Differential gene expression
+BD.markers <- FindAllMarkers(object = S.O.bd.filt, only.pos = TRUE, min.pct = 0)
+ 
+BD.markers$GeneID <- gsub('-', '_', BD.markers$gene)
+BD.markers.top <- BD.markers %>% group_by(cluster) %>% top_n(2, avg_log2FC)
+FeaturePlot(object = S.O.bd.filt, 
+            features = BD.markers.top$gene, 
+            cols = c("grey", "blue"), reduction = "pca")
+ 
+BD.markers.sig <- BD.markers %>% dplyr::filter(avg_log2FC > 1 & p_val_adj < 0.01)
+
+saveRDS(BD.markers.sig, '../Input/scClock/BD.markers.sig.RData')
+ss <- BD.markers.sig %>% group_by(cluster) %>% summarise(num.DEG = n())
+print(ss)

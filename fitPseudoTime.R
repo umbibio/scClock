@@ -6,18 +6,17 @@ require(gridExtra)
 library(grid)
 library(slingshot)
 library(gam)
+library(princurve)
 library(parallel)
 #library(sctransform)
 
 num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
 ## Fit a pseudo-time curve and align using sync data
 
-## down-sample the data to make it more manageable
-set.seed(100)
-S.O.bd.filt <- subset(x = S.O.bd, downsample = 700)
-
 pc.bd <- getPCA(S.O.bd.filt)
-sds.data <- getSlingShot(S.O.bd.filt, 'pca')
+#pc.bd <- getUmap(S.O.bd.filt)
+sds.data <- getPrinCurve(pc.bd)
+#sds.data <- getSlingShot(S.O.bd.filt, 'pca')
 pc.sds.bd <- left_join(pc.bd, sds.data, by = "Sample")
 
 
@@ -82,6 +81,9 @@ for(i in 2:length(time.breaks)){
 }
 
 sds.data$time.idx <- time.idx
+
+## Update the time to 20 min increments
+sds.data$t <- (time.idx) * (1/3)
 
 sds.data <- sds.data %>%  
   group_by(time.idx) %>% mutate(rep = seq(1:n()))
