@@ -214,3 +214,124 @@ plot.sme <-function(fit, v, conf = T){
   title(main = v , cex.lab = 1.2, line = 0.5)
 }
 
+
+
+dtwClustCurves <- function(tc.mus, nclust = 6L){
+  ## Calculate clusters in parallel
+  num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
+  
+  workers <- makeCluster(num.cores)
+  invisible(clusterEvalQ(workers, library("dtwclust")))
+  registerDoParallel(workers)
+  tc.mus <- lapply(2:ncol(tc.mus), function(i) c(as.numeric(tc.mus[,i])))
+  hc_dtw <- tsclust(tc.mus, 
+                    type = "h", 
+                    k = nclust, 
+                    distance = "dtw", 
+                    control = hierarchical_control(method = "complete"),
+                    centroid = shape_extraction, 
+                    #preproc = NULL, 
+                    preproc = zscore,
+                    trace = T,
+                    args = tsclust_args(dist = list(window.size = 4L))
+  )
+  
+  stopCluster(workers)
+  registerDoSEQ()
+  
+  return(hc_dtw)
+}
+
+withinCalssReOrder <- function(tc.mus){
+  clust.ord <- tc.mus %>% dplyr::select(GeneID, cluster) %>% distinct() %>% 
+    group_by(cluster) %>% summarise(GeneSet = list(GeneID)) 
+  
+  clusters <- unique(tc.mus$cluster)
+  hc_eucledian.df <- {}
+  for(i in 1:length(clusters)){
+    class.i <- tc.mus %>% dplyr::filter(cluster == clusters[i]) %>% dplyr::select(GeneID, y, t) %>%
+      pivot_wider(names_from = GeneID, values_from = y) %>% as.data.frame()
+    
+    
+    ## Hierarchical clustering with Eucledian distance
+    hc_eucledian <- hclust(dist(t(as.matrix(class.i[,-1] ))), method = "ward.D")
+    hc_eucledian.df <- rbind(hc_eucledian.df, 
+                             data.frame(GeneID = colnames(class.i[,-1]), 
+                                        hc_eucledian.order = hc_eucledian$order,
+                                        hc_eucledian.cluster = cutree(hc_eucledian,k = 10)))
+  }
+  
+  return(hc_eucledian.df)
+}
+
+## Calculate th overlap of clusters with marker genes and re-order clusters accordingly
+matchClustersToPhase <- function(hc_dtw.df, markers.sig){
+  join.hc_dtw.df <- inner_join(hc_dtw.df, markers.sig, by = 'GeneID')
+  totals <- join.hc_dtw.df %>% group_by(cluster.x) %>% summarise(totals = n())
+  overlap <- join.hc_dtw.df %>% group_by(cluster.x, cluster.y) %>% summarise(overlap = n())
+  overlap <- left_join(overlap, totals, by = 'cluster.x') %>% mutate(precent = overlap/totals)
+  
+  colnames(overlap) <- c('cluster', 'markers', 'counts', 'totals', 'percent')
+  overlap <- overlap %>% dplyr::select(c('cluster','markers', 'percent')) %>% 
+    pivot_wider(names_from = 'markers', values_from = 'percent')
+  overlap[is.na(overlap)] <- 0
+  overlap <- overlap %>% pivot_longer(-c('cluster'), names_to = 'markers', values_to = 'percent')
+  
+  overlap$markers[overlap$markers == 0] <- 'G1a'
+  overlap$markers[overlap$markers == 3] <- 'G1b'
+  overlap$markers[overlap$markers == 2] <- 'G1c'
+  overlap$markers[overlap$markers == 1] <- 'S/M'
+  
+  
+  overlap$cluster <- factor(overlap$cluster, levels = unique(sort(overlap$cluster)))
+  overlap$markers <- factor(overlap$markers, levels = unique(sort(overlap$markers)))
+  
+  return(overlap)
+  
+}
+
+crossCompareMarkers <- function(marker1, marker2, cond1, cond2){
+  marker1 <- marker1 %>% 
+    select(GeneID, cluster)
+  
+  marker2 <- marker2 %>% 
+    select(GeneID, cluster)
+  
+  marker1.lists <- marker1 %>% 
+    group_by(cluster) %>% summarise(genes = list(GeneID))
+  
+  marker2.lists <- marker2 %>% 
+    group_by(cluster) %>% summarise(genes = list(GeneID))
+  
+  
+  
+  marker1.lists$dummy <- 1
+  marker2.lists$dummy <- 1
+  
+  
+  
+  # RH vs pb 10x
+  marker1.marker2.lists <- full_join(marker1.lists, marker2.lists, by = 'dummy')
+  
+  marker1.marker2.lists <- marker1.marker2.lists %>% rowwise() %>%
+    mutate(common.genes = list(intersect(unlist(genes.x), unlist(genes.y))), 
+           num.common = length(intersect(unlist(genes.x), unlist(genes.y))))
+  
+  cluster.sim.marker1.marker2 <- marker1.marker2.lists  %>% 
+    select(cluster.x, cluster.y, common.genes, num.common) %>% unnest(common.genes)
+  
+  colnames(cluster.sim.marker1.marker2) = c(cond1, cond2, 'GeneID', 'num.comm.genes')
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    select(all_of(cond1), all_of(cond2) ,'num.comm.genes') %>% distinct()
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    pivot_wider(names_from = !!cond2, values_from = 'num.comm.genes')
+  
+  cluster.sim.marker1.marker2[is.na(cluster.sim.marker1.marker2)] <- 0
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    pivot_longer(-cond1, names_to = paste0(cond2), values_to = 'num.comm.genes')
+  
+  return(cluster.sim.marker1.marker2)
+}

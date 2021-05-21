@@ -19,7 +19,7 @@ sds.data <- getPrinCurve(pc.bd)
 #sds.data <- getSlingShot(S.O.bd.filt, 'pca')
 pc.sds.bd <- left_join(pc.bd, sds.data, by = "Sample")
 
-
+saveRDS(pc.sds.bd, '../Input/scClock/pc.sds.bd.RData')
 p <- ggplot(pc.sds.bd, aes(x=PC_1,y=PC_2)) + 
   geom_point(aes(
     fill = cluster

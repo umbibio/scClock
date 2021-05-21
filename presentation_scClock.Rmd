@@ -1,0 +1,687 @@
+---
+title: "Mapping time progression in single cell data using matched sychronized bulk RNA-Seq"
+output: html_document
+author: "Kourosh Zarringhalam & Yasaman Rezvani"
+header-includes: \usepackage{xcolor}
+
+date: "`r format(Sys.time(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+```{r loadLibs, echo=FALSE, message=FALSE, warning=FALSE}
+library(Seurat)
+library(openxlsx)
+library(ggplot2)
+library(ggfortify)
+library(jcolors)
+require(gridExtra)
+library(grid)
+library(matrixStats)
+library(tidyverse)
+library(tidytext)
+library(RColorBrewer)
+library(cowplot)
+library(gam)
+library(princurve)
+library(parallel)
+library(sme)
+library(plotly)
+
+source('./loadRDS.R')
+source('./util_funcs.R')
+source('./DEAsyncTimeCourse.R')
+
+
+num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
+```
+
+### Initial analysis of scRNA-Seq WT 0h 37 degree clusters
+1. Data was processed to identify initial clusters. 
+    * Resolution was set to get roughly 4 clusters.
+    
+1. PCA analysis shows the characteristic circular pattern of rapidly replicating cells.
+
+1. Markers in each cluster were identified for later analysis.
+
+
+```{r Initial PCA, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+pc.bd <- getPCA(S.O.bd.filt)
+#pc.bd <- getUmap(S.O.bd.filt)
+#sds.data <- getPrinCurve(pc.bd)
+#sds.data <- getSlingShot(S.O.bd.filt, 'pca')
+#pc.sds.bd <- left_join(pc.bd, sds.data, by = "Sample")
+
+p1 <- ggplot(pc.bd, aes(x=PC_1,y=PC_2)) + 
+  geom_point(aes(
+    fill = cluster
+  ), shape=21, size = 1.5)+ 
+  theme_bw(base_size = 14) + 
+  theme(legend.position=c(1,1),legend.justification=c(1,1), 
+        legend.title = element_blank(),
+        legend.background = element_rect(fill=alpha('white', 0)),
+        legend.direction="vertical") + 
+  ylab('PC2') + xlab('PC1') + 
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 12, face="bold")) + 
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 12, face="bold")) +
+  theme(strip.background = element_rect(colour="black", fill="white", 
+                                        size=0.5, linetype="solid")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold", hjust = 1),
+    axis.title.y = element_text(size=14, face="bold")
+  ) + 
+  guides(color = FALSE)
+
+ss <- BD.markers.sig %>% group_by(cluster) %>% summarise(num.DEG = n())
+p2 <- ggplot(data=ss, aes(x=cluster, y=num.DEG)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=num.DEG), vjust=1.6, color="white", size=3.5)+
+  theme_minimal()
+plot_grid(p1, p2, labels=c("", ""), ncol = 2, nrow = 1)
+```
+
+### Fitting pseudo-time 
+
+1. A "principal curve" was fitted to the first two PCA components.
+
+1. Cells were orthogonality projected on the principal curve and ordered to mimic a pseudo-time progression.
+
+1. Gene expression curves were created along the pseudo-time (arc-length).
+
+1. Expression curves were fitted against the pseudo-time using a GAM model $y = f(t)$ and non-correlating genes were filtered out (1749 genes).
+
+1. Note that the start time and the direction of evolution of time is set arbitrarily.
+
+1. The pseudo-time was mapped to match 0-12h and partitioned into 20 min intervals. Cells falling within the same interval were considered as "pseudo-replicates".
+
+```{r Initial pseudo-time, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=4, fig.height=4}
+sds.data <- getPrinCurve(pc.bd)
+pc.sds.bd <- left_join(pc.bd, sds.data, by = "Sample")
+
+p <- ggplot(pc.sds.bd, aes(x=PC_1,y=PC_2)) + 
+  geom_point(aes(
+    fill = cluster
+  ), shape=21, size = 1.5)+
+  geom_path(aes(x=sc1[cell.ord],y=sc2[cell.ord])) + 
+  theme_bw(base_size = 14) + 
+  theme(legend.position=c(1,1),legend.justification=c(1,1), 
+        legend.title = element_blank(),
+        legend.background = element_rect(fill=alpha('white', 0)),
+        legend.direction="vertical") + 
+  ylab('PC2') + xlab('PC1') + 
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 12, face="bold")) + 
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 12, face="bold")) +
+  theme(strip.background = element_rect(colour="black", fill="white", 
+                                        size=0.5, linetype="solid")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold", hjust = 1),
+    axis.title.y = element_text(size=14, face="bold")
+  ) + 
+  guides(color = FALSE)
+
+
+plot(p)
+
+x <- as.matrix(pc.bd[,c(1,2)])
+fit <- principal_curve(x)
+plot(fit)
+whiskers(x, fit$s, col = "gray")
+  
+```
+
+### Time-course bulk RNA-Seq 
+
+1. Time-course synchronized RNA-Seq data was processed to exclude the outliers.
+
+1. Technical replicates were pooled and biological replicates were used to generate time curves.
+
+1. An spline was fitted with 3 knots and an F-test performed to identify genes with significant expression changes anywhere along the time (edgeR, 2236 genes).
+
+
+```{r sync, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+par(mfrow=c(2,3))
+for(i in 1:6) {
+  GeneID <- row.names(tab)[i]
+  Symbol <- tab$Symbol[i]
+  logCPM.obs.i <- logCPM.obs[GeneID,]
+  logCPM.fit.i <- logCPM.fit[GeneID,]
+  plot(Hours, logCPM.obs.i, ylab="log-CPM", main=Symbol, pch=16)
+  lines(Hours, logCPM.fit.i, col="red", lwd=2)
+}
+  
+```
+
+### Alignment of scRNA-Seq with synchronized bulk RNA-Seq
+
+1. Smoothing B-splines were fitted to the scRNA-Seq and the time-course data independently.
+
+1. Splines were regularly sampled at 20 min time points (0h to 12h), resulting in matched curves with regularly sampled points in both experiments. 
+
+1. Cross correlation analysis was performed on common genes between the data sets (1199 genes) to identify lag time.
+
+
+```{r lagtime, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+cc.sc.sync.genes <- mclapply(c(1:length(comm.genes)), function(i){
+  ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F, lag.max = length(mu.sc.com.grid[[i]]$y))
+  ll <- ll$lag[which.max(ll$acf)]
+  ll
+}, mc.cores = num.cores)
+
+par(mfrow=c(2,2))
+
+
+ll <- ccf( mu.sc.com.grid[[1]]$y, mu.sync.com.grid[[1]]$y, plot = T, lag.max = length(mu.sc.com.grid[[1]]$y),main = 'acf')
+lag <- ll$lag[which.max(ll$acf)] + 2
+plot(mu.sync.com.grid[[1]]$y, type = 'p', pch = 20, col='blue', xlab = 'time-ind', ylab = 'log(expr)', main = 'syncRNA-Seq')
+plot(mu.sc.com.grid[[1]]$y, type = 'p', pch = 20, col='red', xlab = 'time-ind', ylab = 'log(expr)',  main = 'scRNA-Seq')
+plot(c(mu.sc.com.grid[[1]]$y[lag:length(mu.sc.com.grid[[1]]$y)], mu.sc.com.grid[[1]]$y[1:(lag-1)]), 
+     pch = 20, col='red', xlab = 'time-ind', ylab = 'log(expr)',  main = 'lag scRNA-Seq')
+```
+
+1. Distribution of lag-time across 1199 genes indicates that indicates a shift between 6-11 bins (corresponding to ~2-3h). 
+1. Pseudo-time was shifted accordingly and gene curves were re-calculated.
+
+```{r lagtimehist, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+
+# Histogram with density plot
+dd <- data.frame(lag = unlist(cc.sc.sync.genes))
+p1 <- ggplot(dd, aes(x=lag)) + 
+  geom_histogram(aes(y=..density..), colour="black", fill="white")+
+  geom_density(alpha=.2, fill="#FF6666") + theme_minimal()
+
+
+p2 <- ggplot(pc.sds.adj, aes(x=PC_1,y=PC_2)) +
+  geom_point(aes(
+    fill = cluster.y
+  ), shape=21, size = 1.5)+
+  geom_path(aes(x=sc1[cell.ord],y=sc2[cell.ord])) +
+  geom_point(aes(x=sc1[order(adj.time)][1],y=sc2[order(adj.time)][1]), col = 'black', shape=21, size = 5, stroke = 1.2)+
+  geom_point(aes(x=sc1[order(adj.time)][1],y=sc2[order(adj.time)][1]), col = 'blue', shape=8, size = 4, stroke = 1.1)+
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none") +
+  ylab('PC2') + xlab('PC1') +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 12, face="bold")) +
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 12, face="bold")) +
+  theme(strip.background = element_rect(colour="black", fill="white",
+                                        size=0.5, linetype="solid")) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold", hjust = 1),
+    axis.title.y = element_text(size=14, face="bold")
+  ) +
+  guides(color = FALSE)
+
+plot_grid(p1, p2, labels=c("", ""), ncol = 2, nrow = 1)
+  
+```
+
+
+
+### Mean trends
+1. The mean trends were calculated for both synchronized and single cell gene curves using a mixed-effect model.
+
+$$y_i(t_j) = \mu(t_j) + \gamma_i(t_j) + \epsilon_{ij}.$$
+1. Sample genes curves are shown.
+
+1. **Remark** scATAC-Seq will likely increase the resolution of curve clusters and motif analysis in a significant way.
+
+$$y_i(t_j) = \mu(t_j) + \color{red}{x_i(t_j)\beta(t_j)} + \gamma_i(t_j) + \epsilon_{ij}.$$
+
+```{r mixed_effect, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+#vs = unique(sc.tc.df.adj$variable)[sample(1:100, 4)]
+vs <- c('Bdiv_027950', 'Bdiv_028030', 'Bdiv_022630', 'Bdiv_026970c')
+
+par(mfrow = c(1,4))
+for(v in vs){
+  ind <- which(unique(sc.tc.df.adj$variable) == v)
+  plot.sme(sc.tc.fits[[ind]], paste('sc', v))
+}
+
+par(mfrow = c(1,4))
+for(v in vs){
+  ind <- which(unique(sync.tc.df$variable) == v)
+  plot.sme(sync.tc.fits[[ind]], paste('sync', v), conf = F)
+}
+```
+
+### Clustering gene curves.
+
+1. A dynamic time-warping (dtw) hierarchical clustering was employed to automatically cluster gene curves into 4 clusters.
+
+1. Only marker genes identified in scRNA-Seq clusters were used for this analysis. The rational was to examine whether gene-curve clusters will will match marker clusters.
+
+```{r clusters, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+## Get the sme mean splines and filter to include marker genes only
+sync.tc.mus <- smoothSplineSmeFits(sync.tc.fits, unique(sync.tc.df$variable), extend = T)
+colnames(sync.tc.mus) <- c('GeneID', 't', 'y')
+sync.tc.mus <- sync.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) %>%
+  pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
+  as.data.frame()
+
+sc.tc.mus <- smoothSplineSmeFits(sc.tc.fits, unique(sc.tc.df.adj$variable), extend = F)
+colnames(sc.tc.mus) <- c('GeneID', 't', 'y')
+sc.tc.mus <- sc.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) %>%
+  pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
+  as.data.frame()
+
+plot(sc.hc_dtw, type = 'sc')
+#plot(sync.hc_dtw, type = 'sc')
+```
+
+1. Gene curve clusters were matched with the marker clusters in scRNA-Seq. 
+
+1. The overlap is specific and significant, allowing determination of curve cluster identities.
+
+```{r heatmaps, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+num.clust <- 4L
+sc.tc.mus.scale <- sc.tc.mus
+sc.tc.mus.scale[,2:ncol(sc.tc.mus.scale)] <- scale(sc.tc.mus.scale[,2:ncol(sc.tc.mus.scale)],
+                                                       center = T,scale = T)
+sc.tc.mus.scale <- sc.tc.mus.scale %>%  as.data.frame() %>% 
+  pivot_longer(!starts_with('t'), names_to = 'GeneID', values_to = 'y')
+
+sc.hc_dtw.df <- data.frame(GeneID = unique(sc.tc.mus.scale$GeneID), 
+                             order = as.numeric(sc.hc_dtw$order),
+                             cluster = cutree(sc.hc_dtw,k = num.clust))
+
+sc.tc.mus.scale <- left_join(sc.tc.mus.scale, sc.hc_dtw.df, by = 'GeneID')
+
+sc.tc.mus.scale$GeneID <- factor(as.character(sc.tc.mus.scale$GeneID),
+                                   levels = unique(sc.tc.mus.scale$GeneID[sc.tc.mus.scale$order]))
+
+
+
+sc.overlap <- matchClustersToPhase(sc.hc_dtw.df, BD.markers.sig)
+
+sc.phase.match <- sc.overlap %>% group_by(cluster) %>% summarize(phase = markers[which.max(percent)])
+sc.tc.mus.scale$cluster <- factor(sc.tc.mus.scale$cluster, levels = unique(sc.tc.mus.scale$cluster))
+sc.tc.mus.scale <- left_join(sc.tc.mus.scale, sc.phase.match, by = 'cluster')
+
+p1 <- ggplot(sc.tc.mus.scale, aes(x = t, y = reorder_within(GeneID, order, phase), fill = y)) + 
+  geom_tile() + 
+  #scale_x_discrete(expand=c(0,0)) +
+  ylab("Genes") + xlab("time/cells") + 
+  #scale_fill_gradientn(colours = hm.palette(10)) +
+  scale_fill_gradientn(colours = viridis::inferno(10)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y  = element_blank(),
+    legend.position = "none") +
+  facet_grid(phase~., scales = "free",  space='free',
+             labeller=label_wrap_gen(multi_line = TRUE)) +
+  theme(panel.spacing = unit(0.1, "lines")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+p2 <- ggplot(sc.overlap, aes(x = cluster, y = markers, fill = percent)) + 
+  geom_tile() + 
+  #scale_x_discrete(expand=c(0,0)) +
+  ylab("markers") + xlab("clusters") + theme_bw() + 
+  #scale_fill_gradientn(colours = hm.palette(10)) +
+  scale_fill_gradientn(colours = viridis::inferno(1000)) +
+  # theme(
+  #   axis.text.x = element_blank(),
+  #   axis.ticks = element_blank(),
+  #   axis.text.y  = element_blank(),
+  #   legend.position = "none") +
+  theme(panel.spacing = unit(0.1, "lines")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+plot_grid(p2, p1, labels=c("", ""), ncol = 2, nrow = 1)
+
+```
+
+#### Motif Analysis
+1. Motif analysis was performed on the promoter of genes in each cluster (~2Kb).
+
+```{r motif, echo=FALSE, out.width="50%", fig.cap="Motifs"}
+knitr::include_graphics("../Output/scClockFigs/Motif_ClusterV2.png")
+```
+
+#### Next step
+1. Determine static and transient GRNs using expression in each cluster
+
+```{r GRN, echo=FALSE, out.width="80%", fig.cap="Motifs"}
+knitr::include_graphics("../Output/scClockFigs/GRN.jpg")
+```
+
+### Cold Shock
+
+1. As a preliminary analysis 0h WT was compared with 36 h and 36 h "reactivated"
+2. Analysis was performed in two ways
+    * Samples were pulled together and scaled (Seurat Integrate)
+    * Samples were independently processed to identify clusters and then cross compare makers of clusters.
+
+#### Merged samples
+```{r merged3D, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+pc_0hr_36hrN_36hrY <- getPCA(all.samples.integrated_0hr_36hrN_36hrY)
+pc_0hr_36hrN_36hrY$spp <- all.samples.integrated_0hr_36hrN_36hrY$spp
+pc_0hr_36hrN_36hrY$orig.ident <- all.samples.integrated_0hr_36hrN_36hrY$orig.ident
+pc_0hr_36hrN_36hrY$Sample <- gsub('.*_', '', pc_0hr_36hrN_36hrY$Sample)
+
+fig1 <- plot_ly(pc_0hr_36hrN_36hrY, x = ~PC_1, y = ~PC_2, z = ~PC_3, color = ~spp, colors = colorRamp(c("red", "green", "blue")))
+#colors = c('#BF382A', '#0C4B8E'))
+fig1 <- fig1 %>% add_markers(size=2)
+fig1 <- fig1 %>% layout(scene = list(xaxis = list(title = 'PC_1'),
+                                   yaxis = list(title = 'PC_2'),
+                                   zaxis = list(title = 'PC_3')))
+
+pc_0hr_7dN_7dY <- getPCA(all.samples.integrated_0hr_7dN_7dY)
+pc_0hr_7dN_7dY$spp <- all.samples.integrated_0hr_7dN_7dY$spp
+pc_0hr_7dN_7dY$orig.ident <- all.samples.integrated_0hr_7dN_7dY$orig.ident
+pc_0hr_7dN_7dY$Sample <- gsub('.*_', '', pc_0hr_7dN_7dY$Sample)
+
+fig2 <- plot_ly(pc_0hr_7dN_7dY, x = ~PC_1, y = ~PC_2, z = ~PC_3, color = ~spp, colors = colorRamp(c("red", "green", "blue")))
+#colors = c('#BF382A', '#0C4B8E'))
+fig2 <- fig2 %>% add_markers(size=2)
+fig2 <- fig2 %>% layout(scene = list(xaxis = list(title = 'PC_1'),
+                                   yaxis = list(title = 'PC_2'),
+                                   zaxis = list(title = 'PC_3')))
+# 
+# fig <- subplot(fig1, fig2)
+# fig <- fig %>% layout(title = "",
+#          scene = list(domain=list(x=c(0,0.5),y=c(0.5,1)),
+#                       aspectmode='cube'),
+#          scene2 = list(domain=list(x=c(0.5,1),y=c(0.5,1)),
+#                        aspectmode='cube'))
+
+fig2
+
+```
+
+#### Individual Samples
+
+```{r IndividualSamples, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+p1 <- DimPlot(all.spp.list_0hr_36hrN_36hrY[[1]], reduction = "pca", group.by = "seurat_clusters", 
+              pt.size = 1,
+              label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+p2 <- DimPlot( all.spp.list_0hr_36hrN_36hrY[[2]], reduction = "pca", group.by = "seurat_clusters", 
+              pt.size = 1,
+              label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+
+p3 <- DimPlot( all.spp.list_0hr_36hrN_36hrY[[3]], reduction = "pca", group.by = "seurat_clusters", 
+               pt.size = 1,
+               label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+p4 <- DimPlot(all.spp.list_0hr_7dN_7dY[[1]], reduction = "pca", group.by = "seurat_clusters", 
+              pt.size = 1,
+              label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+p5 <- DimPlot( all.spp.list_0hr_7dN_7dY[[2]], reduction = "pca", group.by = "seurat_clusters", 
+              pt.size = 1,
+              label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+
+
+p6 <- DimPlot(all.spp.list_0hr_7dN_7dY[[3]], reduction = "pca", group.by = "seurat_clusters", 
+               pt.size = 1,
+               label = TRUE, label.size = 10) + NoLegend() + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+#plot_grid(p1, p2, p3, p4, p5, p6, labels=c("0h", "36hN", "36hY", "0h", "7dN", "7dY"), ncol = 3, nrow = 2)
+plot_grid(p1, p2,  p4, p5,  labels=c("0h", "36hN",  "0h", "7dN" ), ncol = 2, nrow = 2)
+
+```
+
+
+#### Cluster Marker Similarity
+
+```{r MarkerSim, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=12, fig.height=4}
+cluster.sim.BD0.BD36N <- crossCompareMarkers(markers_0hr_36hrN_36hrY[[1]], markers_0hr_36hrN_36hrY[[2]], 'BD0', 'BD36N')
+cluster.sim.BD0.BD36Y <- crossCompareMarkers(markers_0hr_36hrN_36hrY[[1]], markers_0hr_36hrN_36hrY[[3]], 'BD0', 'BD36Y')
+cluster.sim.BD36N.BD36Y <- crossCompareMarkers(markers_0hr_36hrN_36hrY[[2]], markers_0hr_36hrN_36hrY[[3]], 'BD36N', 'BD36Y')
+
+cluster.sim.BD0.BD7dN <- crossCompareMarkers(markers_0hr_7dN_7dY[[1]], markers_0hr_7dN_7dY[[2]], 'BD0', 'BD7dN')
+cluster.sim.BD0.BD7dY <- crossCompareMarkers(markers_0hr_7dN_7dY[[1]], markers_0hr_7dN_7dY[[3]], 'BD0', 'BD7dY')
+cluster.sim.BD7dN.BD7dY <- crossCompareMarkers(markers_0hr_7dN_7dY[[2]], markers_0hr_7dN_7dY[[3]], 'BD7dN', 'BD7dY')
+
+cluster.sim.BD36N.BD7dN <- crossCompareMarkers(markers_0hr_36hrN_36hrY[[2]], markers_0hr_7dN_7dY[[2]], 'BD36N', 'BD7dN')
+
+
+hm.palette <- colorRampPalette(brewer.pal(9, 'Blues'), space='Lab')
+
+p1 <- ggplot(cluster.sim.BD0.BD36N , aes(x = BD0, y = BD36N, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD36N") + xlab("BD0") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None")
+
+p2 <- ggplot(cluster.sim.BD0.BD36Y , aes(x = BD0, y = BD36Y, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD36Y") + xlab("BD0") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None")
+
+p3 <- ggplot(cluster.sim.BD36N.BD36Y , aes(x = BD36N, y = BD36Y, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD36Y") + xlab("BD36N") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None")   
+
+p4 <- ggplot(cluster.sim.BD0.BD7dN , aes(x = BD0, y = BD7dN, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD7dN") + xlab("BD0") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None")   
+
+p5 <- ggplot(cluster.sim.BD0.BD7dY , aes(x = BD0, y = BD7dY, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD7dY") + xlab("BD0") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None") 
+
+p6 <- ggplot(cluster.sim.BD7dN.BD7dY , aes(x = BD7dN, y = BD7dY, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD7dY") + xlab("BD7dN") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None") 
+
+
+p7 <- ggplot(cluster.sim.BD36N.BD7dN , aes(x = BD36N, y = BD7dN, fill = num.comm.genes)) + 
+  geom_tile() + theme_bw() + 
+  geom_text(aes(label = num.comm.genes, size=6)) +
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  ylab("BD7dN") + xlab("BD36N") + 
+  scale_fill_gradientn(colours = hm.palette(5)) +
+  theme(
+    #axis.text.x = element_blank(),
+    #axis.ticks = element_blank(),
+    legend.position = "none") +
+  theme(strip.text.x = element_text(size=14, face="bold"))+
+  # strip.background = element_rect(colour="black", fill=NA))+
+  #theme_bw()+
+  #facet_grid(.~RH, scales = "free_x", space='free_x', 
+  #           labeller=label_wrap_gen(multi_line = TRUE)) + 
+  #theme(panel.spacing = unit(0.3, "lines")) + 
+  #theme(strip.text.x=element_text(angle=0, hjust=0.5, vjust=0.5))+
+  
+  theme(axis.text.x = element_text(face="bold", size=10, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=10, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )+
+  theme(legend.position = "None") 
+
+
+#plot_grid(p1, p2, p3, p4, p5, p6, labels=c("0h", "36hN", "36hY", "0h", "7dN", "7dY"), ncol = 3, nrow = 2)
+
+plot_grid(p1, p4,  p7,  labels=c("0hVs36N", "0hVs36N", "36Nvs7dN" ), ncol = 3, nrow = 1)
+
+```

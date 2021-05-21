@@ -23,7 +23,7 @@ sync.tc.df <- tc.logCPM %>%
             ind = rep, variable = GeneID)
 
 
-
+saveRDS(sync.tc.df, '../Input/scClock/sync.tc.df.RData')
 ## Get the common genes
 comm.genes <- unique(sync.tc.df$variable)[which(unique(sync.tc.df$variable) %in%
                                                   unique(sc.tc.df$variable))]
@@ -54,7 +54,9 @@ cc.sc.sync.genes <- mclapply(c(1:length(comm.genes)), function(i){
 }, mc.cores = num.cores)
 
 
-saveRDS(cc.sc.sync.genes, '../Input/scClock/cc.sc.sync.genes.RData')
+saveRDS(mu.sync.com.grid, '../Input/scClock/mu.sync.com.grid.RData')
+saveRDS(mu.sc.com.grid, '../Input/scClock/mu.sc.com.grid.RData')
+
 
 # Histogram with density plot
 dd <- data.frame(lag = unlist(cc.sc.sync.genes))
@@ -188,5 +190,6 @@ saveRDS(cell.cycle.genes.df.adj, '../Input/scClock/cell.cycle.genes.df.adj.RData
 sc.tc.df.adj <- cell.cycle.genes.df.adj %>% 
   transmute(y = log2.expr, tme = adj.time, ind = rep.y, variable = GeneID)
 
+saveRDS(sc.tc.df.adj, '../Input/scClock/sc.tc.df.adj.RData')
 
 

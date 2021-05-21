@@ -92,6 +92,7 @@ summary(decideTests(fit))
 logCPM.obs <- cpm(y, log=TRUE, prior.count=fit$prior.count)
 logCPM.fit <- cpm(fit, log=TRUE)
 
+
 # par(mfrow=c(2,2))
 # for(i in 1:4) {
 #   GeneID <- row.names(tab)[i]
@@ -116,4 +117,4 @@ tc.logCPM <- tc.logCPM %>% as.data.frame() %>%
 tc.logCPM <- right_join(tc.logCPM, Samples, by = 'Sample')
 tc.logCPM.rep <- tc.logCPM %>% group_by(GeneID, time_point) %>% summarise(rep = 1:n())
 tc.logCPM$rep <- tc.logCPM.rep$rep
-saveRDS(BD.markers.sig, '../Input/scClock/tc.logCPM.RData')
+

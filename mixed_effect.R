@@ -14,7 +14,7 @@ sync.tc.fits <- mclapply(unique(sync.tc.df$variable),
                            sme(sync.tc.df[sync.tc.df$variable==v,c("y","tme","ind")],
                                lambda.mu = 10, lambda.v = 10), mc.cores = num.cores)
 
-saveRDS(object = sync.tc.fits ,file = "../Input/setClock/sme_fits_sync_tc_20min.RData")
+saveRDS(object = sync.tc.fits ,file = "../Input/scClock/sme_fits_sync_tc_20min.RData")
 
 #sync.tc.fits <- readRDS("../Input/setClock/sme_fits_sync_tc_20min.RData")
 
@@ -24,7 +24,7 @@ sc.tc.fits <- mclapply(unique(sc.tc.df.adj$variable),
                       sme(sc.tc.df.adj[sc.tc.df.adj$variable==v,c("y","tme","ind")],
                           lambda.mu = 8, lambda.v = 8), mc.cores = num.cores)
 
-saveRDS(object = sc.tc.fits, file = "../Input/setClock/sme_fits_sc_tc_20min.RData")
+saveRDS(object = sc.tc.fits, file = "../Input/scClock/sme_fits_sc_tc_20min.RData")
 #sc.tc.fits  <- readRDS("../Input/setClock/sme_fits_sc_tc_20min.RData")
 
 
