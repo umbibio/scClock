@@ -7,7 +7,6 @@ prep_S.O <- function(S.O, res = 0.1){
   S.O <- ScaleData(S.O, features = all.genes)
   S.O <- RunPCA(S.O, features = VariableFeatures(object = S.O))
   S.O <- FindNeighbors(S.O, dims = 1:13)
-  #S.O <- FindClusters(S.O, resolution = 0.1)
   S.O <- FindClusters(S.O, resolution = res)
   S.O <- RunUMAP(S.O, dims = 1:13)
   return(S.O)
@@ -23,7 +22,7 @@ getNormExpr <- function(S.O){
   expr.norm <- expr.norm  %>% group_by(GeneID) %>% 
     dplyr::mutate(quantile = ifelse(expr <= quantile(expr)[2], 1, 
                                     ifelse(expr <= quantile(expr)[3], 2, 
-                                           ifelse(expr <= quantile(expr)[4], 3,4))))
+                                           ifelse(expr <= quantile(expr)[4], 3,4)))) %>% ungroup()
   return(expr.norm)
 }
 
@@ -50,9 +49,6 @@ getPrinCurve <- function(pc.db){
   x <- as.matrix(pc.bd[,c(1,2)])
   fit <- principal_curve(x)
   pt <- fit$lambda
-  
-  
-  
   
   ## reversing the order of time
   pt <- max(pt) - pt
@@ -334,4 +330,206 @@ crossCompareMarkers <- function(marker1, marker2, cond1, cond2){
     pivot_longer(-cond1, names_to = paste0(cond2), values_to = 'num.comm.genes')
   
   return(cluster.sim.marker1.marker2)
+}
+
+
+processCount <- function(input.dir, filename, tt, rr, down.sample = T){
+  file.counts <- read.csv(paste(input.dir, filename, sep = ''))
+  genes <- file.counts$X
+  expr <- file.counts[,-1]
+  rownames(expr) <- genes
+  
+  
+  S.O <- CreateSeuratObject(counts = expr, min.cells = 10, min.features = 100)
+  
+  #VlnPlot(S.O, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+  #FeatureScatter(S.O, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  cutoffs <- quantile(S.O$nCount_RNA, probs = c(0.01, 0.9))
+  print(cutoffs)
+  S.O <- subset(S.O, subset = nFeature_RNA > cutoffs[1] & nFeature_RNA < cutoffs[2] )
+  
+  if(down.sample){
+    S.O <- subset(x = S.O, downsample = 2000)
+  }
+  
+  names(S.O$orig.ident)
+  pheno <- data.frame(Sample = names(S.O$orig.ident))
+  spp <- paste('BDiv', tt, rr, sep = '')
+  pheno$spp <- spp
+  pheno$time <- tt
+  pheno$reactivate <- rr
+  
+  pheno$NAME <- paste(pheno$spp, pheno$Sample, sep = '_')
+  
+  
+  L <- list(pheno = pheno, S.O = S.O)
+  
+  return(L)
+}
+
+mergeS.O <- function(L){
+  num.objs <- length(L)
+  
+  phenos <- lapply(L, `[[`, 1)
+  S.Os <-  lapply(L, `[[`, 2)
+  
+  all.samples <- bind_rows(phenos)
+  
+  S.O.merge <- merge(S.Os[[1]], y = S.Os[2:num.objs ], add.cell.ids = unique(all.samples$spp))
+  
+  rownames(all.samples) <- all.samples$NAME
+  S.O.merge <- AddMetaData(S.O.merge, metadata = all.samples)  
+  
+  return(S.O.merge)
+}
+
+processeMergedS.O <- function(S.O.list, file.info, ref.ind, res = 0.2, SC = FALSE){
+  ## Merge the S.O, add metadata, and re-split by spp and update the S.O.list
+  S.O.merge <- mergeS.O(S.O.list[ref.ind])
+  S.O.list <- SplitObject(S.O.merge, split.by = "spp")
+  
+  if(SC){
+    S.O.list <- lapply(X = S.O.list, FUN = SCTransform)
+    features <- SelectIntegrationFeatures(object.list = S.O.list, nfeatures = 3000)
+    S.O.list <- PrepSCTIntegration(object.list = S.O.list, anchor.features = features)
+    anchors <- FindIntegrationAnchors(object.list = S.O.list, normalization.method = "SCT", 
+                                      anchor.features = features)
+    S.O.integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT")
+  }else{
+    S.O.list <- lapply(X = S.O.list, FUN = function(x) {
+      x <- NormalizeData(x)
+      x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+    })
+    features <- SelectIntegrationFeatures(object.list = S.O.list)
+    anchors <- FindIntegrationAnchors(object.list = S.O.list, anchor.features = features)
+    S.O.integrated <- IntegrateData(anchorset = anchors)
+  }
+  
+  
+  # switch to integrated assay. Make sure to set to RNA for Differential Expression
+  DefaultAssay(S.O.integrated) <- "integrated"
+  
+  # Run the standard workflow for visualization and clustering
+  S.O.integrated <- ScaleData(S.O.integrated, verbose = FALSE)
+  S.O.integrated <- RunPCA(S.O.integrated, npcs = 30, verbose = FALSE)
+  S.O.integrated <- RunUMAP(S.O.integrated, reduction = "pca", dims = 1:30)
+  S.O.integrated <- FindNeighbors(S.O.integrated, reduction = "pca", dims = 1:30)
+  S.O.integrated <- FindClusters(S.O.integrated, resolution = res)
+  
+  S.O.integrated$phase.cond <- paste(S.O.integrated@meta.data$spp, 
+                                     Idents(S.O.integrated), sep = "_")
+  Idents(S.O.integrated) <- "phase.cond"
+  
+  return(S.O.integrated)
+}
+
+
+getCellCyclePhaseMarkers <- function(all.spp.list){
+  all.markers.list <- mclapply(all.spp.list, function(x) FindAllMarkers(object = x, only.pos = TRUE))
+  all.markers.list <- lapply(all.markers.list, function(x) {
+    x$GeneID = gsub('-', '_', x$gene)
+    x$glob.clust <- gsub('.*_', '', x$cluster)
+    return(x)
+  })
+  
+  
+  all.markers.list.sig <- lapply(all.markers.list, function(x) {
+    sig.marker = x %>% dplyr::filter(avg_log2FC > log2(1.5) & p_val_adj < 0.05)
+    return(sig.marker)
+  })
+  
+  L <- list(all.markers.list = all.markers.list, 
+            all.markers.list.sig = all.markers.list.sig)
+  return(L)
+}
+
+crossCompareMarkers <- function(marker1, marker2, cond1, cond2){
+  marker1 <- marker1 %>% 
+    select(GeneID, glob.clust)
+  
+  marker2 <- marker2 %>% 
+    select(GeneID, glob.clust)
+  
+  marker1.lists <- marker1 %>% 
+    group_by(glob.clust) %>% summarise(genes = list(GeneID))
+  
+  marker2.lists <- marker2 %>% 
+    group_by(glob.clust) %>% summarise(genes = list(GeneID))
+  
+  
+  
+  marker1.lists$dummy <- 1
+  marker2.lists$dummy <- 1
+  
+  
+  marker1.marker2.lists <- full_join(marker1.lists, marker2.lists, by = 'dummy')
+  
+  marker1.marker2.lists <- marker1.marker2.lists %>% rowwise() %>%
+    mutate(common.genes = list(intersect(unlist(genes.x), unlist(genes.y))), 
+           num.common = length(intersect(unlist(genes.x), unlist(genes.y))))
+  
+  cluster.sim.marker1.marker2 <- marker1.marker2.lists  %>% 
+    select(glob.clust.x, glob.clust.y, common.genes, num.common) %>% unnest(common.genes)
+  
+  colnames(cluster.sim.marker1.marker2) = c(cond1, cond2, 'GeneID', 'num.comm.genes')
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    select(all_of(cond1), all_of(cond2),'num.comm.genes') %>% distinct()
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    pivot_wider(names_from = !!cond2, values_from = 'num.comm.genes')
+  
+  cluster.sim.marker1.marker2[is.na(cluster.sim.marker1.marker2)] <- 0
+  
+  cluster.sim.marker1.marker2 <- cluster.sim.marker1.marker2 %>% 
+    pivot_longer(-cond1, names_to = paste0(cond2), values_to = 'num.comm.genes')
+  
+  return(cluster.sim.marker1.marker2)
+}
+
+
+markerContrasts <- function(marker1, marker2, cond1, cond2){
+  marker1 <- marker1 %>% 
+    select(GeneID, glob.clust)
+  
+  marker2 <- marker2 %>% 
+    select(GeneID, glob.clust)
+  
+  marker1.lists <- marker1 %>% 
+    group_by(glob.clust) %>% summarise(genes = list(GeneID))
+  
+  marker2.lists <- marker2 %>% 
+    group_by(glob.clust) %>% summarise(genes = list(GeneID))
+  
+  
+  marker1.lists$dummy <- 1
+  marker2.lists$dummy <- 1
+  
+  marker1.marker2.lists <- full_join(marker1.lists, marker2.lists, by = 'dummy')
+  marker1.marker2.lists <- marker1.marker2.lists %>% dplyr::filter(glob.clust.x == glob.clust.y)
+  
+  marker1.marker2.lists <- marker1.marker2.lists %>% rowwise() %>%
+    mutate(common.genes = list(intersect(unlist(genes.x), unlist(genes.y))), 
+           num.common = length(intersect(unlist(genes.x), unlist(genes.y))),
+           cond1.only.genes = list(setdiff(unlist(genes.x), unlist(genes.y))),
+           num.cond1.only.genes = length(setdiff(unlist(genes.x), unlist(genes.y))),
+           cond2.only.genes = list(setdiff(unlist(genes.y), unlist(genes.x))),
+           num.cond2.only.genes = length(setdiff(unlist(genes.y), unlist(genes.x))))
+  
+  
+  marker1.marker2.lists <- marker1.marker2.lists %>% select(-dummy)
+  colnames(marker1.marker2.lists) <- c(paste(cond1, 'cluster', sep = '.'), 
+                                       paste(cond1, 'genes', sep = '.'),
+                                       paste(cond2, 'cluster', sep = '.'), 
+                                       paste(cond2, 'genes', sep = '.'),
+                                       'common.genes',
+                                       'num.common.genes',
+                                       paste(cond1, 'only.genes', sep = '.'),
+                                       paste('num', cond1, 'only.genes', sep = '.'),
+                                       paste(cond2, 'only.genes', sep = '.'),
+                                       paste('num', cond2, 'only.genes', sep = '.'))
+  
+  
+  return(marker1.marker2.lists)
 }

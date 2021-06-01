@@ -8,6 +8,7 @@ library(grid)
 library(matrixStats)
 library(tidyverse)
 library(RColorBrewer)
+library(parallel)
 #library(sctransform)
 
 
