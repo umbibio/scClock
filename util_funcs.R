@@ -533,3 +533,77 @@ markerContrasts <- function(marker1, marker2, cond1, cond2){
   
   return(marker1.marker2.lists)
 }
+
+makeGlobalHeatMap <- function(global.mat, prod.desc, cut.level = 4){
+  mat <- global.mat
+  row_dend = hclust(dist(mat))
+  base_mean = rowMeans(mat[,2:ncol(mat)])
+  mat_scaled = t(apply(mat, 1, scale))
+  Sample = factor(colnames(mat) , levels = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", "BDiv7dN"))
+  ha = HeatmapAnnotation(
+    Sample = Sample, 
+    col = list(
+      Sample = c("BDiv0hrN" = 'red', "BDiv4hrN" = 'purple', "BDiv12hrN" = 'green', "BDiv36hrN" = 'gold', "BDiv7dN" = 'blue')
+      
+    ),
+    annotation_name_side = "left"
+  )
+  ht_list = Heatmap(mat_scaled, name = "expression", cluster_columns = F, 
+                    col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+                    top_annotation = ha, 
+                    row_split = cut.level,
+                    show_column_names = FALSE, row_title = NULL, show_row_names = F, show_row_dend = FALSE) 
+  
+  tmp <- cutree(row_dend, cut.level)
+  heat.clust <- data.frame(GeneID = gsub('-', '_', names(tmp)), cluster = c(tmp))
+  heat.clust <- left_join(heat.clust, prod.desc, by = 'GeneID')
+  
+  L <- list(heat.clust = heat.clust, ht_list = ht_list)
+  return(L)
+  
+}
+
+makeMatchedHeatMap <- function(matched.mat, prod.desc, cut.level = 4){
+  mat <- matched.mat
+  row_dend = hclust(dist(mat))
+  base_mean = rowMeans(mat[,2:ncol(mat)])
+  mat_scaled = t(apply(mat, 1, scale))
+  
+  
+  sample.ord <- as.numeric(gsub('hrN', '', gsub('BDiv', '', gsub('_.*', '', gsub('7d', '168hr', colnames(mat))))))
+  clust.ord <- as.numeric(gsub('.*_', '', colnames(mat)))
+  tmp <- data.frame(sample.ord = sample.ord, clust.ord = clust.ord)
+  col.orders <- with(tmp, order(clust.ord, sample.ord))
+  #re.ord <- rep(c(0:(length(unique(sample.ord)) - 1)), rle(sample.ord[order(sample.ord)])$lengths)
+  #re.ord <- re.ord[order(sample.ord)]
+  #col.orders <- clust.ord + re.ord * length(unique(clust.ord)) + 1
+  #col.orders <- order(re.ord +  clust.ord * length(unique(re.ord)) + 1)
+  
+  
+  Sample = factor(gsub('_.*', '', colnames(mat)) , levels = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", "BDiv7dN"))
+  Cluster = factor(gsub('.*_', '', colnames(mat)), level=unique(sort(gsub('.*_', '', colnames(mat)))))
+  
+  ha = HeatmapAnnotation(
+    Cluster = Cluster,
+    Sample = Sample, 
+    col = list(
+      Cluster = c("0" = 'yellow', "1" = 'cyan', "2" = 'brown', "3" = 'orange'),
+      Sample = c("BDiv0hrN" = 'red', "BDiv4hrN" = 'purple', "BDiv12hrN" = 'green', "BDiv36hrN" = 'gold', "BDiv7dN" = 'blue')
+    ),
+    annotation_name_side = "left"
+  )
+  
+  ht_list = Heatmap(mat_scaled, name = "expression", cluster_columns = F, column_order = col.orders,
+                    col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+                    top_annotation = ha, 
+                    row_split = cut.level,
+                    show_column_names = FALSE, row_title = NULL, show_row_names = F, show_row_dend = FALSE) 
+  
+  tmp <- cutree(row_dend, cut.level)
+  heat.clust <- data.frame(GeneID = gsub('-', '_', names(tmp)), cluster = c(tmp))
+  heat.clust <- left_join(heat.clust, prod.desc, by = 'GeneID')
+  
+  L <- list(heat.clust = heat.clust, ht_list = ht_list)
+  return(L)
+}
+

@@ -3,21 +3,69 @@ library(cowplot)
 library(patchwork)
 library(tidytext)
 library(ggVennDiagram)
+library(UpSetR)
 
-#theme_set(theme_cowplot())
+
+makeGlobalContrasts <- function(all.samples.integrated, c.mode  = c('full', 'WT')){
+  
+  c.mode <- match.arg(c.mode)
+  
+  objs <- as.character(unique(all.samples.integrated@meta.data$spp))
+  
+  contrasts <- data.frame(ref = objs, dummy = 1) %>% full_join( data.frame(query = objs, dummy = 1), by = 'dummy') %>% 
+    mutate(ref.time = as.numeric(gsub("hr.*", "", gsub("7d", "168hr", gsub("BDiv", "", ref)))),
+           query.time = as.numeric(gsub("hr.*", "", gsub("7d", "168hr", gsub("BDiv", "", query)))),
+           ref.reactive = ifelse(grepl('Y', ref), 'Y', 'N'),
+           query.reactive = ifelse(grepl('Y', query), 'Y', 'N'))
+  if(c.mode == 'full'){
+    my.contrasts <- contrasts %>%
+      dplyr::filter( 
+        ( (ref.time < query.time) ) | 
+          ( (ref.time == query.time) & (ref.reactive != query.reactive) ) 
+      ) %>% dplyr::filter(!(ref.reactive == 'N' & query.reactive == 'Y' & ref.time != 0)) %>%
+      dplyr::filter(!(ref.reactive == 'Y' & query.reactive == 'Y')) %>% 
+      dplyr::filter(!(ref.reactive == 'Y' & query.reactive == 'N' & ref.time != query.time ))
+  }else if(c.mode == 'WT'){
+    my.contrasts <- contrasts %>% dplyr::filter(ref.time == 0 & query.reactive != 'Y' & ref.time < query.time)
+  }
+  
+  return(my.contrasts)
+  
+}
+
+makeMatchedContrasts <- function(all.samples.integrated, c.mode  = c('full', 'WT')){
+  
+  c.mode <- match.arg(c.mode)
+  tmp <- makeGlobalContrasts(all.samples.integrated, c.mode  = c.mode)
+ 
+  clusters <- unique(all.samples.integrated@meta.data$seurat_clusters)
+ 
+  
+  my.contrasts <- data.frame(ref = paste(rep(tmp$ref, each = length(clusters)), rep(sort(clusters), nrow(tmp)), sep = '_'),
+                             query = paste(rep(tmp$query, each = length(clusters)), rep(sort(clusters), nrow(tmp)), sep = '_'),
+                             cluster = rep(sort(clusters), length(tmp$ref))) 
+  
+  return(my.contrasts)
+  
+}
 
 ## Integrate Samples
 print(file.info)
-ref.ind <- c(1,5,2,3,6) ## WT and non-reactivated samples 
+ref.ind <- c(1,5,2,3,6,4,7) 
 all.samples.integrated <- processeMergedS.O(S.O.list, file.info, ref.ind, res = 0.1, SC = F)
+saveRDS(all.samples.integrated, '../Input/scClock/coldShock/all_samples_integrated.RData')
 
 all.samples.integrated@meta.data$spp <- factor(all.samples.integrated@meta.data$spp, 
-                                               levels = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", "BDiv7dN"))
+                                               levels = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", 
+                                                          "BDiv36hrN", "BDiv7dN", 
+                                                          "BDiv36hrY", "BDiv7dY"))
+
+
 #Idents(all.samples.integrated) <- "phase.cond"
-p1 <- DimPlot(all.samples.integrated, reduction = "pca", 
+p1 <- DimPlot(all.samples.integrated, reduction = "umap", 
               split.by = 'spp',
               pt.size = 1,
-              shape.by='spp',
+              #shape.by='spp',
               label = TRUE, label.size = 6) + NoLegend() + 
   theme(panel.spacing = unit(0.5, "lines")) + 
   theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
@@ -36,13 +84,11 @@ plot(p1)
 
 DefaultAssay(all.samples.integrated) <- "RNA"
 Idents(all.samples.integrated) <- "spp"
-objs <- unique(all.samples.integrated@meta.data$spp)
-ref.obj <- objs[1]
-query.obj <- objs[2:length(objs)]
-
-contrasts <- data.frame(ref = ref.obj, query = query.obj)
 
 
+
+c.mode <- 'WT'
+contrasts <- makeGlobalContrasts(all.samples.integrated, 'WT')
 global.DEGs <- mclapply(split(contrasts, seq(nrow(contrasts))), function(x){
   tmp <- FindMarkers(all.samples.integrated, ident.1 = x$query, ident.2 = x$ref, verbose = T)
   tmp$ref <- x$ref
@@ -53,27 +99,32 @@ global.DEGs <- mclapply(split(contrasts, seq(nrow(contrasts))), function(x){
 })
 
 global.shock.markers <- bind_rows(global.DEGs)
+saveRDS(global.shock.markers, '../Input/scClock/coldShock/global_shock_markers.RData')
 
 global.shock.markers.sig <- global.shock.markers %>% 
   dplyr::filter(p_val_adj < 0.05 & abs(avg_log2FC) > log2(1.5)) %>% arrange(desc(abs(avg_log2FC)))
 
+global.shock.markers.overlap <- global.shock.markers.sig %>% group_by(GeneID) %>% 
+  summarise(num.contrasts = length(query)) %>% arrange(desc(num.contrasts))
+
+global.shock.markers.sig <- left_join(global.shock.markers.sig, global.shock.markers.overlap, by = 'GeneID')
 global.shock.markers.stats <- global.shock.markers.sig %>%
   mutate(reg = ifelse(avg_log2FC > 0, 1, -1)) %>%
-  group_by(query, reg) %>% summarise(num.DEGs = n()) 
+  group_by(ref, query, reg) %>% summarise(num.DEGs = n()) 
 
 print(global.shock.markers.stats)
 
 global.shock.markers.sig <- left_join(global.shock.markers.sig, prod.desc, by = 'GeneID')
-write.xlsx(global.shock.markers.sig, '../Output/scClockOut/global_shock_markers.xlsx')
+write.xlsx(global.shock.markers.sig, '../Output/scClockOut/global_shock_markers_WT_base.xlsx')
 
-tmp <- global.shock.markers.sig %>% dplyr::filter(avg_log2FC > 0) %>% group_by(query) %>%
+tmp <- global.shock.markers.sig %>% dplyr::filter(avg_log2FC < 0) %>% group_by(ref, query) %>%
   summarise(genes = list(GeneID))
 
 venn.list <- tmp$genes
-names(venn.list) <- tmp$query
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
 
 ggVennDiagram(venn.list)
-
+upset(fromList(venn.list))
 
 
 DefaultAssay(all.samples.integrated) <- 'RNA'
@@ -99,9 +150,6 @@ Idents(all.samples.integrated) <- 'spp'
 DefaultAssay(all.samples.integrated) <- 'RNA'
 VlnPlot(object = all.samples.integrated, features = 'Bdiv-033980')
 
-tmp <- left_join(global.shock.markers.sig, prod.desc, by = 'GeneID')
-write.xlsx(tmp, '../Output/scClockOut/global_shock_markers.xlsx')
-
 
 ### Differential expression analysis
 ## Cell cycle phase specific
@@ -115,32 +163,17 @@ for (i in 1:length(all.spp.list)) {
 }
 
 
-GM <- getCellCyclePhaseMarkers(all.spp.list)
+contrasts <- makeMatchedContrasts(all.samples.integrated, c.mode  = 'WT')
 
+GM <- getCellCyclePhaseMarkers(all.spp.list)
 
 ## For each cluster, pool global markers.
 pooled_markers <- bind_rows(GM$all.markers.list.sig) %>% group_by(glob.clust) %>%
   summarise(glob.markers = list(unique(gene)), num.markers = length(unique(gene)))
 
-objs <- unique(all.samples.integrated@meta.data$spp)
-ref.obj <- objs[1]
-query.obj <- objs[2:length(objs)]
-clusters <- unique(all.samples.integrated@meta.data$seurat_clusters)
-ref.clusts <- data.frame(ref = paste(ref.obj, clusters, sep = '_'))
-ref.clusts$cluster <- gsub('.*_', '', ref.clusts$ref)
-ref.clusts$dummy <- 1
-query.clusts <- data.frame(query = paste(rep(query.obj, each = length(clusters)), clusters, sep = '_'))
-query.clusts$dummy <- 1
-query.clusts$cluster <- gsub('.*_', '', query.clusts$query)
-
-contrasts <- full_join(ref.clusts, query.clusts, by = 'dummy') %>% 
-  dplyr::filter(cluster.x == cluster.y) %>%
-  transmute(ref = ref, query = query)
-
-contrasts$cluster <- gsub('.*_', '', contrasts$ref)
-
 #ident.1 case, ident.2 is control
 Idents(all.samples.integrated) <- 'phase.cond'
+DefaultAssay(all.samples.integrated) <- 'RNA'
 matched.DEGs <- mclapply(split(contrasts, seq(nrow(contrasts))), function(x){
   tmp <- FindMarkers(all.samples.integrated, ident.1 = x$query, ident.2 = x$ref, verbose = T)
   ind <- rownames(tmp) %in% unlist(pooled_markers$glob.markers[which(pooled_markers$glob.clust == x$cluster)]) 
@@ -155,8 +188,14 @@ matched.DEGs <- mclapply(split(contrasts, seq(nrow(contrasts))), function(x){
 
 
 matched.DEGs <- bind_rows(matched.DEGs)
+saveRDS(matched.DEGs, '../Input/scClock/coldShock/matched_DEGs.Rdata')
 
 matched.DEGs.sig <- matched.DEGs %>% dplyr::filter(p_val_adj < 0.05 & abs(avg_log2FC) > log2(1.5)) %>% arrange(desc(abs(avg_log2FC)))
+
+matched.DEGs.overlap <- matched.DEGs.sig %>% group_by(GeneID) %>% 
+  summarise(num.contrasts = length(query)) %>% arrange(desc(num.contrasts))
+
+matched.DEGs.sig <- left_join(matched.DEGs.sig, matched.DEGs.overlap, by = 'GeneID')
 
 matched.DEGs.stats <- matched.DEGs.sig %>%
   mutate(reg = ifelse(avg_log2FC > 0, 1, -1)) %>%
@@ -188,4 +227,13 @@ VlnPlot(object = all.samples.integrated, features = 'Bdiv-015710')
 tmp <- left_join(matched.DEGs.sig, prod.desc, by = 'GeneID')
 write.xlsx(tmp, '../Output/scClockOut/matched_shock_markers.xlsx')
 
+
+tmp <- matched.DEGs.sig %>% dplyr::filter(avg_log2FC > 0) %>% group_by(ref, query) %>%
+  summarise(genes = list(GeneID))
+
+venn.list <- tmp$genes
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
+
+ggVennDiagram(venn.list)
+upset(fromList(venn.list))
 

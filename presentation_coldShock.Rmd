@@ -1,0 +1,435 @@
+---
+title: "Exploratory Cold Shock Markers"
+output: html_document
+author: "Kourosh Zarringhalam & Yasaman Rezvani"
+header-includes: \usepackage{xcolor}
+
+date: "`r format(Sys.time(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+```{r loadLibs, echo=FALSE, message=FALSE, warning=FALSE}
+library(Seurat)
+library(openxlsx)
+library(ggplot2)
+library(ggfortify)
+library(jcolors)
+require(gridExtra)
+library(grid)
+library(matrixStats)
+library(tidyverse)
+library(tidytext)
+library(RColorBrewer)
+library(cowplot)
+library(gam)
+library(princurve)
+library(parallel)
+library(sme)
+library(plotly)
+library(patchwork)
+library(ggVennDiagram)
+library(UpSetR)
+library(ComplexHeatmap)
+library(circlize)
+
+
+source('./loadRDS_coldShock.R')
+source('./util_funcs.R')
+
+
+
+num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
+```
+
+### Integrated Data Processing
+1. Data was integrated and processed to identify initial clusters. 
+    * Resolution was set to get roughly 4 clusters.
+    * Matched clusters accross datasets were retained
+    
+1. Subsequent data analysis was performed on **individually normalized** data-sets.
+
+
+
+```{r Inital_Integration, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=16, fig.height=10}
+p1 <- DimPlot(all.samples.integrated, reduction = "pca", 
+              split.by = 'spp',
+              pt.size = 1,
+              #shape.by='spp',
+              label = TRUE, label.size = 5) + NoLegend() + 
+  theme(panel.spacing = unit(0.5, "lines")) + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+wrap_plots(p1)
+
+```
+
+### Global Marker analysis 
+
+1. Differential Expression Analysis was performed independent of cell cycle phase using WT as base line.
+
+
+```{r Global_Markers, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+global.shock.markers.sig <- global.shock.markers %>% 
+  dplyr::filter(p_val_adj < 0.05 & abs(avg_log2FC) > log2(1.5)) %>% arrange(desc(abs(avg_log2FC)))
+
+global.shock.markers.overlap <- global.shock.markers.sig %>% group_by(GeneID) %>% 
+  summarise(num.contrasts = length(query)) %>% arrange(desc(num.contrasts))
+
+global.shock.markers.sig <- left_join(global.shock.markers.sig, global.shock.markers.overlap, by = 'GeneID')
+global.shock.markers.sig <- left_join(global.shock.markers.sig, prod.desc, by = 'GeneID')
+
+tmp <- global.shock.markers.sig %>% dplyr::filter(avg_log2FC > 0) %>% group_by(ref, query) %>%
+  summarise(genes = list(GeneID))
+
+venn.list <- tmp$genes
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
+
+sets <- fromList(venn.list)
+
+upset(sets, nsets = 10, number.angles = 0, point.size = 3.5, line.size = 2)
+grid.text(
+  "upregulated",
+  x = 0.90,
+  y = 0.05,
+  gp = gpar(
+    fontsize = 10,
+    fontface = 3
+  )
+)
+
+ggVennDiagram(venn.list)
+```
+
+```{r Global_Markers2, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+tmp <- global.shock.markers.sig %>% dplyr::filter(avg_log2FC < 0) %>% group_by(ref, query) %>%
+  summarise(genes = list(GeneID))
+
+venn.list <- tmp$genes
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
+
+
+sets <- fromList(venn.list)
+
+upset(sets, nsets = 10, number.angles = 0, point.size = 3.5, line.size = 2)
+grid.text(
+  "upregulated",
+  x = 0.90,
+  y = 0.05,
+  gp = gpar(
+    fontsize = 10,
+    fontface = 3
+  )
+)
+ggVennDiagram(venn.list)
+```
+
+### Expression of top genes 
+
+1. Up regulation is mild but steady.
+
+1. Proportion of cells expressing is not changing much.
+
+```{r global_expression_up, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+
+global.shock.markers.top <- global.shock.markers.sig  %>% ungroup() %>% dplyr::filter(avg_log2FC > 0.6) %>%  
+  arrange(desc(num.contrasts), avg_log2FC) %>% transmute(gene = gene, num.contrasts = num.contrasts) %>%
+  distinct() %>% head(n=3)
+  
+
+
+DefaultAssay(all.samples.integrated) <- 'RNA'
+Idents(all.samples.integrated) <- 'spp' 
+
+all.samples.integrated@meta.data$spp <- factor(all.samples.integrated@meta.data$spp , 
+                                               levels = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", 
+                                                          "BDiv7dN", "BDiv36hrY", "BDiv7dY"))
+all.samples.integrated.sub <- subset(all.samples.integrated, idents = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", "BDiv7dN"))
+p2 <- FeaturePlot(object = all.samples.integrated.sub, 
+                  shape.by = 'spp',
+                  split.by = 'spp',
+                  label = T, pt.size = 0.6, label.size = 4, 
+                  features = global.shock.markers.top$gene,
+                  cols = c("lightgrey", "red"), reduction = "pca") 
+
+plot(p2)
+```
+
+```{r global_expression_up2, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+p3 <- DotPlot(all.samples.integrated, features = global.shock.markers.top$gene, 
+              cols = c("blue", "red", "green", "yellow"),
+              dot.scale = 8) + RotatedAxis()
+
+plot(p3)
+```
+
+```{r global_expression_up3, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+VlnPlot(object = all.samples.integrated, features = global.shock.markers.top$gene)
+```
+
+1. Down regulation is stranger
+1. Proportion of cells expressing declines more.
+
+```{r global_expression_down, eval = F, echo = F, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+
+global.shock.markers.top <- global.shock.markers.sig  %>% ungroup() %>% dplyr::filter(avg_log2FC < -0.6) %>%  
+  arrange(desc(num.contrasts), avg_log2FC) %>% transmute(gene = gene, num.contrasts = num.contrasts) %>%
+  distinct() %>% head(3)
+
+DefaultAssay(all.samples.integrated) <- 'RNA'
+Idents(all.samples.integrated) <- 'spp' 
+p2 <- FeaturePlot(object = all.samples.integrated.sub, 
+                  shape.by = 'spp',
+                  split.by = 'spp',
+                  label = T, pt.size = 0.6, label.size = 3, 
+                  features = global.shock.markers.top$gene,
+                  cols = c("lightgrey", "red"), reduction = "pca") 
+
+plot(p2)
+```
+
+```{r global_expression_down2, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+p3 <- DotPlot(all.samples.integrated, features = global.shock.markers.top$gene, 
+              cols = c("blue", "red", "green", "yellow"),
+              dot.scale = 8) + RotatedAxis()
+
+plot(p3)
+```
+
+```{r global_expression_down3, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+VlnPlot(object = all.samples.integrated, features = global.shock.markers.top$gene)
+```
+
+
+### Clustering DEGs
+
+1. Hierarchical clustering was performed and expression heatmaps were generated
+
+```{r Global_Heatmap, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=6, fig.height=6}
+Idents(all.samples.integrated) <- 'spp'
+DefaultAssay(all.samples.integrated) <- 'RNA'
+global.avg.expr <- as.data.frame(log1p(AverageExpression(all.samples.integrated, verbose = FALSE)$RNA))
+global.avg.expr$gene <- rownames(global.avg.expr)
+global.avg.expr$GeneID <- gsub('-', '_', global.avg.expr$gene)
+
+global.up.reg <- global.shock.markers.sig$GeneID[global.shock.markers.sig$avg_log2FC > 0]
+global.down.reg <- global.shock.markers.sig$GeneID[global.shock.markers.sig$avg_log2FC < 0]
+
+global.avg.expr.up <- global.avg.expr[global.avg.expr$GeneID %in% global.up.reg, ]
+global.avg.expr.down <- global.avg.expr[global.avg.expr$GeneID %in% global.down.reg, ]
+
+
+global.mat_up <- global.avg.expr.up[,1:(ncol(global.avg.expr.up) - 2)] %>% dplyr::select(!contains('Y')) %>% as.matrix()
+global.mat_down <- global.avg.expr.down[,1:(ncol(global.avg.expr.down) - 2)] %>% dplyr::select(!contains('Y')) %>% as.matrix()
+
+
+L1 <- makeGlobalHeatMap(global.mat_up, prod.desc, 7)
+L2 <- makeGlobalHeatMap(global.mat_down, prod.desc, 7)
+
+draw(L1$ht_list)
+draw(L2$ht_list)
+```
+
+
+
+### Matched Marker analysis
+
+1. Integrated data was used to identify matched clusters.
+
+1. In each data sets, markers of clusters were identified
+
+1. Cluster markers were pooled across datasets
+
+1. For each cluster differential expression was performed on pooled marker of the cluster using WT as ctr
+
+```{r matched_clusters, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=16, fig.height=10}
+Idents(all.samples.integrated) <- "phase.cond"
+DefaultAssay(all.samples.integrated) <- 'RNA'
+p1 <- DimPlot(all.samples.integrated, reduction = "pca", 
+              split.by = 'spp',
+              pt.size = 1,
+              #shape.by='spp',
+              label = TRUE, label.size = 6) + NoLegend() + 
+  theme(panel.spacing = unit(0.5, "lines")) + 
+  theme(axis.text.x = element_text(face="bold", size=12, angle=0)) +
+  theme(axis.text.y = element_text(face="bold", size=12, angle=0)) +
+  theme(
+    axis.title.x = element_text(size=14, face="bold"),
+    axis.title.y = element_text(size=14, face="bold")
+  )
+
+plot(p1)
+
+```
+
+
+```{r matched_clusters_DEGs, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+matched.DEGs.sig <- matched.DEGs %>% dplyr::filter(p_val_adj < 0.05 & abs(avg_log2FC) > log2(1.5)) %>% arrange(desc(abs(avg_log2FC)))
+
+matched.DEGs.overlap <- matched.DEGs.sig %>% group_by(GeneID) %>% 
+  summarise(num.contrasts = length(query)) %>% arrange(desc(num.contrasts))
+
+matched.DEGs.sig <- left_join(matched.DEGs.sig, matched.DEGs.overlap, by = 'GeneID')
+matched.DEGs.sig <- left_join(matched.DEGs.sig, prod.desc, by = 'GeneID')
+
+tmp <- matched.DEGs.sig  %>% dplyr::filter(avg_log2FC > 0) %>% group_by(ref, query) %>%
+  summarise(genes = list(GeneID))
+
+venn.list <- tmp$genes
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
+
+sets <- fromList(venn.list)
+
+upset(sets, nsets = 10, number.angles = 0, point.size = 3.5, line.size = 2)
+grid.text(
+  "upregulated",
+  x = 0.90,
+  y = 0.05,
+  gp = gpar(
+    fontsize = 10,
+    fontface = 3
+  )
+)
+```
+
+```{r matched_clusters_DEGs2, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+tmp <- matched.DEGs.sig  %>% dplyr::filter(avg_log2FC < 0) %>% group_by(ref, query) %>%
+  summarise(genes = list(GeneID))
+
+venn.list <- tmp$genes
+names(venn.list) <- paste(tmp$ref, "_vs_", tmp$query, sep = '')
+
+sets <- fromList(venn.list)
+
+upset(sets, nsets = 10, number.angles = 0, point.size = 3.5, line.size = 2)
+grid.text(
+  "upregulated",
+  x = 0.90,
+  y = 0.05,
+  gp = gpar(
+    fontsize = 10,
+    fontface = 3
+  )
+)
+
+```
+
+
+### Expression of top genes 
+
+1. up regulated
+```{r matched_expression_up, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=16, fig.height=16}
+
+matched.DEGs.top <- matched.DEGs.sig %>% dplyr::filter(avg_log2FC > 0) %>% group_by(cluster) %>% top_n(1, abs(avg_log2FC))
+  
+
+sample.ord <- as.numeric(
+  gsub('hrY', '', gsub('hrN', '', gsub('BDiv', '', gsub('_.*', '', gsub('7d', '168hr', unique(all.samples.integrated$phase.cond))))))
+  )
+clust.ord <- as.numeric(gsub('.*_', '', unique(all.samples.integrated$phase.cond)))
+
+re.ord <- rep(c(0:(length(unique(sample.ord)) - 1)), rle(sample.ord[order(sample.ord)])$lengths)
+re.ord <- re.ord[order(sample.ord)]
+#col.orders <- clust.ord + re.ord * length(unique(clust.ord)) + 1
+phase.cond.orders <- order(re.ord +  clust.ord * length(unique(re.ord)) + 1)
+
+all.samples.integrated$phase.cond <- factor(all.samples.integrated$phase.cond, 
+                                            levels = unique(all.samples.integrated$phase.cond)[phase.cond.orders])
+
+
+DefaultAssay(all.samples.integrated) <- 'RNA'
+Idents(all.samples.integrated) <- 'spp' 
+
+all.samples.integrated.sub <- subset(all.samples.integrated, idents = c("BDiv0hrN", "BDiv4hrN", "BDiv12hrN", "BDiv36hrN", "BDiv7dN"))
+
+Idents(all.samples.integrated) <- 'phase.cond' 
+Idents(all.samples.integrated.sub) <- 'phase.cond' 
+
+p2 <- FeaturePlot(object = all.samples.integrated.sub, 
+                  shape.by = 'spp',
+                  split.by = 'spp',
+                  label = T, pt.size = 0.6, label.size = 3, 
+                  features = unique(matched.DEGs.top$gene),
+                  cols = c("lightgrey", "red"), reduction = "pca") 
+
+plot(p2)
+```
+
+```{r matched_expression_up2, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+p3 <- DotPlot(all.samples.integrated.sub, features = unique(matched.DEGs.top$gene), 
+              cols = c("blue", "red", "green", "yellow"),
+              dot.scale = 8) + RotatedAxis()
+
+plot(p3)
+```
+
+```{r matched_expression_up3, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=12, fig.height=8}
+VlnPlot(object = all.samples.integrated.sub, features = unique(matched.DEGs.top$gene))
+```
+
+1. down regulated
+```{r matched_expression_down, eval = T, echo = F, message=FALSE, warning=FALSE,fig.width=16, fig.height=16}
+
+matched.DEGs.top <- matched.DEGs.sig %>% dplyr::filter(avg_log2FC < 0) %>% group_by(cluster) %>% top_n(1, abs(avg_log2FC))
+  
+
+p2 <- FeaturePlot(object = all.samples.integrated, 
+                  shape.by = 'spp',
+                  split.by = 'spp',
+                  label = T, pt.size = 0.6, label.size = 3, 
+                  features = unique(matched.DEGs.top$gene),
+                  cols = c("lightgrey", "red"), reduction = "pca") 
+
+plot(p2)
+```
+
+```{r matched_expression_down2, eval = T, echo = F, message=FALSE, warning=FALSE,fig.width=8, fig.height=8}
+p3 <- DotPlot(all.samples.integrated.sub, features = unique(matched.DEGs.top$gene), 
+              cols = c("blue", "red", "green", "yellow"),
+              dot.scale = 8) + RotatedAxis()
+
+plot(p3)
+```
+
+```{r matched_expression_down3, eval = T, echo = F, message=FALSE, warning=FALSE,fig.width=12, fig.height=8}
+VlnPlot(object = all.samples.integrated.sub, features = unique(matched.DEGs.top$gene))
+```
+
+### Clustering DEGs
+
+1. Hierarchical clustering was performed per phase and expression heatmaps were generated
+
+```{r Matched_Heatmap, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=6, fig.height=6}
+## Matched
+## Get the average expression per timepoint
+Idents(all.samples.integrated) <- 'phase.cond'
+DefaultAssay(all.samples.integrated) <- 'RNA'
+matched.avg.expr <- as.data.frame(log1p(AverageExpression(all.samples.integrated, verbose = FALSE)$RNA))
+matched.avg.expr$gene <- rownames(matched.avg.expr)
+matched.avg.expr$GeneID <- gsub('-', '_', matched.avg.expr$gene)
+
+matched.up.reg <- matched.DEGs.sig$GeneID[matched.DEGs.sig$avg_log2FC > 0]
+matched.down.reg <- matched.DEGs.sig$GeneID[matched.DEGs.sig$avg_log2FC < 0]
+
+matched.avg.expr.up <- matched.avg.expr[matched.avg.expr$GeneID %in% matched.up.reg, ]
+matched.avg.expr.down <- matched.avg.expr[matched.avg.expr$GeneID %in% matched.down.reg, ]
+
+
+matched.mat_up <- matched.avg.expr.up[,1:(ncol(matched.avg.expr.up) - 2)] %>% dplyr::select(!contains('Y'))
+matched.mat_down <- matched.avg.expr.down[,1:(ncol(matched.avg.expr.down) - 2)] %>% dplyr::select(!contains('Y'))
+
+
+L1 <- makeMatchedHeatMap(matched.mat_up, prod.desc, 7)
+L2 <- makeMatchedHeatMap(matched.mat_down, prod.desc, 7)
+
+
+draw(L1$ht_list)
+draw(L2$ht_list)
+```
