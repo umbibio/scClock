@@ -59,7 +59,8 @@ colnames(bd.expr) <- bdiv.pheno$NAME[bd.ind]
 set.seed(100)
 S.O.bd.filt <- subset(x = S.O.bd, downsample = 800)
 
-
+#saveRDS(S.O.bd.filt, '../Input/scClock/S.O.bd.filt.smooth.RData')
+saveRDS(S.O.bd.filt, '../Input/scClock/S.O.bd.filt.RData')
 # ## Differential gene expression
 BD.markers <- FindAllMarkers(object = S.O.bd.filt, only.pos = TRUE, min.pct = 0)
  

@@ -11,7 +11,7 @@ sync.tc.mus <- sync.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) 
   pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
   as.data.frame()
 
-sc.tc.mus <- smoothSplineSmeFits(sc.tc.fits, unique(sc.tc.df$variable), extend = F)
+sc.tc.mus <- smoothSplineSmeFits(sc.tc.fits, unique(sc.tc.df.adj$variable), extend = F)
 colnames(sc.tc.mus) <- c('GeneID', 't', 'y')
 sc.tc.mus <- sc.tc.mus %>% dplyr::filter(GeneID %in% BD.markers.sig$GeneID) %>%
   pivot_wider(names_from = 'GeneID', values_from = 'y') %>% 
@@ -75,13 +75,13 @@ sc.tc.mus.scale$GeneID <- factor(as.character(sc.tc.mus.scale$GeneID),
 hc_eucledian.df <- withinCalssReOrder(sync.tc.mus.scale) 
 sync.tc.mus.scale <- left_join(sync.tc.mus.scale, hc_eucledian.df, by = 'GeneID')
 sync.tc.mus.scale <- sync.tc.mus.scale %>% mutate(cluster = as.factor(cluster),
-                                                  GeneID = reorder_within(GeneID, hc_eucledian.order, cluster)) 
+                                                  GeneID.reord = reorder_within(GeneID, hc_eucledian.order, cluster)) 
 
 
 hc_eucledian.df <- withinCalssReOrder(sc.tc.mus.scale) 
 sc.tc.mus.scale <- left_join(sc.tc.mus.scale, hc_eucledian.df, by = 'GeneID')
 sc.tc.mus.scale <- sc.tc.mus.scale %>% mutate(cluster = as.factor(cluster),
-                                                  GeneID = reorder_within(GeneID, hc_eucledian.order, cluster)) 
+                                                 GeneID.reord = reorder_within(GeneID, hc_eucledian.order, cluster)) 
 
 ## map the clusteres
 sync.overlap <- matchClustersToPhase(sync.hc_dtw.df, BD.markers.sig)
@@ -171,4 +171,10 @@ p3 <- ggplot(sc.overlap, aes(x = cluster, y = markers, fill = percent)) +
   )
 
 plot(p3)  
+
+
+saveRDS(sc.tc.mus, '../Input/scClock/sc.tc.mus.RData')
+saveRDS(sync.tc.mus, '../Input/scClock/sync.tc.mus.RData')
+saveRDS(sc.tc.mus.scale, '../Input/scClock/sc.tc.mus.scale.RData')
+saveRDS(sync.tc.mus.scale, '../Input/scClock/sync.tc.mus.scale.RData')
 

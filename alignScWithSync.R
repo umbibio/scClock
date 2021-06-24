@@ -24,6 +24,7 @@ sync.tc.df <- tc.logCPM %>%
 
 
 saveRDS(sync.tc.df, '../Input/scClock/sync.tc.df.RData')
+
 ## Get the common genes
 comm.genes <- unique(sync.tc.df$variable)[which(unique(sync.tc.df$variable) %in%
                                                   unique(sc.tc.df$variable))]

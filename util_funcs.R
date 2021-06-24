@@ -1,14 +1,57 @@
 ## functions
 ##
-prep_S.O <- function(S.O, res = 0.1){
+prep_S.O <- function(S.O, res = 0.1, var.features = F, down.sample = F, smooth.data = F, network = T){
   S.O <- NormalizeData(S.O, normalization.method = "LogNormalize", scale.factor = 10000)
   S.O <- FindVariableFeatures(S.O, selection.method = "vst", nfeatures = 2000)
+  if(var.features){
+    ## Work on variable features only
+    S.O <- subset(S.O, features = VariableFeatures(S.O))
+  }
   all.genes <- rownames(S.O)
   S.O <- ScaleData(S.O, features = all.genes)
   S.O <- RunPCA(S.O, features = VariableFeatures(object = S.O))
-  S.O <- FindNeighbors(S.O, dims = 1:13)
+  S.O <- FindNeighbors(S.O, dims = 1:10, reduction = 'pca')
   S.O <- FindClusters(S.O, resolution = res)
+  if(down.sample){
+    S.O <- subset(x = S.O, downsample = 3200)
+    S.O <- FindNeighbors(S.O, dims = 1:13)
+    S.O <- FindClusters(S.O, resolution = res)
+  }
   S.O <- RunUMAP(S.O, dims = 1:13)
+  if(smooth.data){
+    S.O@meta.data$smooth.id <- rownames(S.O@meta.data)
+    if(network){
+      cat('network smoothing \n')
+      AdjacencyMat <- as.matrix(S.O@graphs$RNA_nn)
+      con <- colSums(AdjacencyMat)
+      con <- unlist(lapply(con, function(x) ifelse(x == 0, 0, 1/x)))
+      
+      ## Scaling adjacancy
+      for(i in 1:ncol(AdjacencyMat)){
+        AdjacencyMat[,i] <- con[i] * AdjacencyMat[,i]
+      }
+      
+      ## Smoothing for a few iterations
+      max.smoothing <- 3
+      alpha <- 0.6
+      scDat <- as.matrix(S.O[["RNA"]]@data)
+      Ft <- scDat
+      for(i in 1:max.smoothing){
+        cat(paste('smoothing iteration', i, '/', max.smoothing))
+        cat('\n')
+        Ft <- alpha * Ft %*% AdjacencyMat + (1 - alpha) * scDat
+      }
+      exprs <- Ft
+    }else{
+      Idents(S.O) <- 'smooth.id'
+      exprs <- AverageExpression(S.O, features = all.genes)
+      exprs <- exprs$RNA
+    }
+    smooth_assay <- CreateAssayObject(counts = exprs)
+    S.O[["smooth"]] <- smooth_assay
+    Idents(S.O) <- 'seurat_clusters'
+    DefaultAssay(S.O) <- "smooth"
+  }
   return(S.O)
 }
 

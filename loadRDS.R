@@ -20,6 +20,10 @@ prod.desc <- readRDS('../Input/scClock/prod.desc.RData')
 markers_0hr_36hrN_36hrY <- readRDS('../Input/scClock/markers_0hr_36hrN_36hrY.RData')
 markers_0hr_7dN_7dY <- readRDS('../Input/scClock/markers_0hr_7dN_7dY.RData')
 
+sc.tc.mus <- readRDS('../Input/scClock/sc.tc.mus.RData')
+sync.tc.mus <- readRDS('../Input/scClock/sync.tc.mus.RData')
+sc.tc.mus.scale <- readRDS('../Input/scClock/sc.tc.mus.scale.RData')
+sync.tc.mus.scale <- readRDS('../Input/scClock/sync.tc.mus.scale.RData')
 
 
 

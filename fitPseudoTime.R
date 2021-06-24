@@ -57,6 +57,7 @@ ggsave(filename="../Output/scClockFigs/initial_pseudo_time_BD.pdf",
 ## Pseudo-time analysis with SLingshot
 ## Identify genes that correlate with time
 
+#Y <- log2(S.O.bd.filt@assays$smooth@counts + 1) ## smoothed version
 Y <- log2(S.O.bd.filt@assays$RNA@counts + 1)
 var.genes <- names(sort(apply(Y, 1, var),decreasing = TRUE))#[1:1000] 
 Y <- Y[var.genes, ]
@@ -112,6 +113,7 @@ cell.ord <- sds.data$cell.ord
 
 topgenes <- names(sort(gam.pval.sig, decreasing = FALSE))  
 cell.cycle.genes.expr <- as.matrix(S.O.bd.filt@assays$RNA@data[topgenes, cell.ord])
+#cell.cycle.genes.expr <- as.matrix(S.O.bd.filt@assays$smooth@data[topgenes, cell.ord]) ## smoothed version
 
 
 cell.cycle.genes.df <- data.frame(GeneID = rownames(cell.cycle.genes.expr),
