@@ -14,6 +14,7 @@ library(parallel)
 
 source('./util_funcs.R')
 
+
 ### b. divergense
 input.dir.bdiv <- "../Input/scRNAseqBdiv/"
 bdiv.count.file <- "bdiv.expr.csv"

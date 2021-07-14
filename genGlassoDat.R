@@ -16,6 +16,7 @@ library(graphlayouts)
 
 
 
+
 ## Read the WT bdiv and create an initial Seurat object
 file.counts <- read.csv("../Input/scRNAseqBdivCS/bd0hr_count.csv")
 genes <- file.counts$X
@@ -33,7 +34,9 @@ print(cutoffs)
 S.O <- subset(S.O, subset = nFeature_RNA > cutoffs[1] & nFeature_RNA < cutoffs[2] )
 
 ## Downsample the cells
-S.O.sub <- subset(x = S.O, downsample = 3000)
+S.O.sub <- prep_S.O(S.O, res = 0.1, var.features = T, down.sample = T, smooth.data = T, network = T)
+
+
 
 pheno <- data.frame(Sample = names(S.O.sub$orig.ident))
 spp <- 'BDiv0hr'
@@ -42,7 +45,19 @@ pheno$NAME <- paste(pheno$spp, pheno$Sample, sep = '_')
 rownames(pheno) <- names(S.O.sub$orig.ident)
 S.O.sub <- AddMetaData(S.O.sub, metadata = pheno) 
 
+Ft <- S.O.sub@assays$smooth@data
+genes <- rownames(Ft)
+cells <- colnames(Ft)
+
+Ft.scale <- scale(t(Ft))
+S <- cov(Ft.scale)
+glassoFast()
+saveRDS(S, '../Input/scClock/glasso/S_smooth_3200.RData')
+saveRDS(S.O.sub, '../Input/scClock/glasso/S.O.sub_smooth_3200.RData')
+
+
 ## Find variable Features and fit a KNN graph on PCA coordinates
+S.O.sub <- subset(x = S.O, downsample = 3200)
 S.O.sub <- NormalizeData(S.O.sub) 
 ## Set to 500 genes
 S.O.sub <- FindVariableFeatures(S.O.sub, selection.method = "vst", nfeatures = 800)

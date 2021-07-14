@@ -72,14 +72,24 @@ isCircular(tx_trans) <- rep(F, length(isCircular(tx_trans)))
 #seqinfo(tx_genes)
 seqinfo(tx_trans)
 
-counts <- Read10X_h5(filename = "../Input/scATAC/ME49_cell_ranger/raw_peak_bc_matrix.h5")
-metadata <- read.csv(
-  file = "../Input/scATAC/ME49_cell_ranger/singlecell.csv",
-  header = TRUE,
-  row.names = 1
-)
 
-peak_anno <- read_tsv("../Input/scATAC/ME49_cell_ranger/raw_peak_bc_matrix/peaks.bed")
+# peak-barcode matrix
+mex_dir_path <- "../Input/scATAC/ME49_scATAC_pro/raw_matrix/MACS2/"
+mtx_path <- paste(mex_dir_path, "matrix.mtx", sep = '/')
+feature_path <- paste(mex_dir_path, "features.txt", sep = '/')
+barcode_path <- paste(mex_dir_path, "barcodes.txt", sep = '/')
+
+
+features <- readr::read_tsv(feature_path, col_names = F) %>% tidyr::unite(feature)
+barcodes <- readr::read_tsv(barcode_path, col_names = F) %>% tidyr::unite(barcode)
+
+mtx <- Matrix::readMM(mtx_path) %>%
+  magrittr::set_rownames(features$feature) %>%
+  magrittr::set_colnames(barcodes$barcode)
+
+Tg.count <- as.data.frame(as.matrix(mtx)) # Cell ranger / default
+
+peak_anno <- read_tsv("../Input/scATAC/ME49_scATAC_pro/peaks/MACS2/Tg_peaks.narrowPeak")
 
 #counts <- Read10X_h5(filename = "../Input/scATAC/ME49_cell_ranger/filtered_peak_bc_matrix.h5")
 #peak_anno <- read_tsv("../Input/scATAC/ME49_cell_ranger/peak_annotation.tsv")
@@ -89,7 +99,6 @@ chrom_assay <- CreateChromatinAssay(
   sep = c(":", "-"),
   #genome = seqinfo(tx_genes),
   genome = seqinfo(tx_trans),
-  fragments = '../Input/scATAC/ME49_cell_ranger/fragments.tsv.gz',
   min.cells = 3,
   min.features = 10
 )
@@ -168,7 +177,7 @@ Tg_ATAC
 
 
 
-Tg_ATAC <- RunTFIDF(Tg_ATAC)
+Tg_ATAC <- RunTFIDF(Tg13200_ATAC)
 Tg_ATAC <- FindTopFeatures(Tg_ATAC, min.cutoff = 'q0')
 Tg_ATAC <- RunSVD(Tg_ATAC)
 

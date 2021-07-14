@@ -60,7 +60,8 @@ names(tmp) <- names(seqlengths(txdb))
 seqlengths(tx_trans) <- tmp
 #seqlevels(tx_genes)
 seqlevels(tx_trans)
-inds <- c(5,6,1,2,3,7,8,10,11,9,4,12,13,14)
+#inds <- c(c(5,6,1,2,3,7,8,10,11,9,4,12,13,14) + 100, seq(1, 100, by = 1))
+inds <- c(5,6,1,2,3,7,8,10,11,9,4,12,13,14) 
 
 #seqlevels(tx_genes) <- gsub('TGME49_', '', seqlevels(tx_genes)[inds])
 #seqlevels(tx_genes) <- seqlevels(tx_genes)[inds]
@@ -72,14 +73,17 @@ isCircular(tx_trans) <- rep(F, length(isCircular(tx_trans)))
 #seqinfo(tx_genes)
 seqinfo(tx_trans)
 
-counts <- Read10X_h5(filename = "../Input/scATAC/ME49_cell_ranger/raw_peak_bc_matrix.h5")
+counts <- Read10X_h5(filename = "../Input/scATAC/NovaSeq/Tg_ME49/filtered_peak_bc_matrix.h5")
 metadata <- read.csv(
-  file = "../Input/scATAC/ME49_cell_ranger/singlecell.csv",
+  file = "../Input/scATAC/NovaSeq/Tg_ME49/singlecell.csv",
   header = TRUE,
   row.names = 1
 )
 
-peak_anno <- read_tsv("../Input/scATAC/ME49_cell_ranger/raw_peak_bc_matrix/peaks.bed")
+metadata.filt <- metadata
+metadata.filt$Sample <- rownames(metadata.filt)
+metadata.filt <- metadata.filt[metadata.filt$Sample %in% colnames(counts), ]
+peak_anno <- read_tsv("../Input/scATAC/NovaSeq/Tg_ME49/filtered_peak_bc_matrix/peaks.bed")
 
 #counts <- Read10X_h5(filename = "../Input/scATAC/ME49_cell_ranger/filtered_peak_bc_matrix.h5")
 #peak_anno <- read_tsv("../Input/scATAC/ME49_cell_ranger/peak_annotation.tsv")
@@ -87,17 +91,16 @@ peak_anno <- read_tsv("../Input/scATAC/ME49_cell_ranger/raw_peak_bc_matrix/peaks
 chrom_assay <- CreateChromatinAssay(
   counts = counts,
   sep = c(":", "-"),
-  #genome = seqinfo(tx_genes),
   genome = seqinfo(tx_trans),
-  fragments = '../Input/scATAC/ME49_cell_ranger/fragments.tsv.gz',
-  min.cells = 3,
-  min.features = 10
+  fragments = '../Input/scATAC/NovaSeq/Tg_ME49/fragments.tsv.gz',
+  min.cells = 10,
+  min.features = 200
 )
 
 Tg_ATAC <- CreateSeuratObject(
   counts = chrom_assay,
   assay = "peaks",
-  meta.data = metadata
+  meta.data = metadata.filt
 )
 
 
@@ -140,7 +143,7 @@ peaks <- CallPeaks(
 Tg_ATAC$pct_reads_in_peaks <- Tg_ATAC$peak_region_fragments / Tg_ATAC$passed_filters * 100
 Tg_ATAC$blacklist_ratio <- Tg_ATAC$blacklist_region_fragments / Tg_ATAC$peak_region_fragments
 
-Tg_ATAC$high.tss <- ifelse(Tg_ATAC$TSS.enrichment > 2, 'High', 'Low')
+Tg_ATAC$high.tss <- ifelse(Tg_ATAC$TSS.enrichment > 3, 'High', 'Low')
 TSSPlot(Tg_ATAC, group.by = 'high.tss') + NoLegend()
 
 Tg_ATAC$nucleosome_group <- ifelse(Tg_ATAC$nucleosome_signal > 4, 'NS > 4', 'NS < 4')
@@ -157,9 +160,9 @@ VlnPlot(
 
 Tg_ATAC <- subset(
   x = Tg_ATAC,
-  subset = peak_region_fragments > 10 &
-    peak_region_fragments < 100 &
-    pct_reads_in_peaks > 15 &
+  subset = peak_region_fragments > 1000 &
+    peak_region_fragments < 4000 &
+    pct_reads_in_peaks > 40 &
     #blacklist_ratio < 0.05 &
     nucleosome_signal < 4 &
     TSS.enrichment > 2
@@ -174,15 +177,17 @@ Tg_ATAC <- RunSVD(Tg_ATAC)
 
 DepthCor(Tg_ATAC)
 
-
-Tg_ATAC <- RunUMAP(object = Tg_ATAC, reduction = 'lsi', dims = 2:30)
-Tg_ATAC <- FindNeighbors(object = Tg_ATAC, reduction = 'lsi', dims = 2:30)
+## Must remove highly correlating components
+Tg_ATAC <- RunUMAP(object = Tg_ATAC, reduction = 'lsi', dims = seq(1:30)[-c(1,5)])
+Tg_ATAC <- FindNeighbors(object = Tg_ATAC, reduction = 'lsi', dims = seq(1:30)[-c(1,5)])
 Tg_ATAC <- FindClusters(object = Tg_ATAC, verbose = FALSE, algorithm = 3)
-DimPlot(object = Tg_ATAC, label = TRUE) + NoLegend()
+
+
+DimPlot(object = Tg_ATAC, label = TRUE, reduction = 'tsne') + NoLegend()
 
 DefaultAssay(Tg_ATAC) <- "peaks"
-gene.activities <- GeneActivity(Tg_ATAC,
-                                extend.downstream = 100)
+gene.activities <- GeneActivity(Tg_ATAC, extend.upstream = 600,
+                                extend.downstream = 200)
 
 ## gene.activity matrix created with other approaches can be passed here
 Tg_ATAC[['RNA']] <- CreateAssayObject(counts = gene.activities)
@@ -198,12 +203,47 @@ DefaultAssay(Tg_ATAC) <- 'RNA'
 FeaturePlot(
   object = Tg_ATAC,
   features = c('TGME49-208020'),
-  pt.size = 0.1,
+  pt.size = 0.5,
   max.cutoff = 'q95',
   ncol = 1
 )
 
 
+
+## For PCA
+DefaultAssay(Tg_ATAC) <- 'RNA'
+Tg_ATAC <- FindVariableFeatures(Tg_ATAC, selection.method = "vst", nfeatures = 2000)
+
+all.genes <- rownames(Tg_ATAC)
+Tg_ATAC <- ScaleData(Tg_ATAC, features = all.genes)
+Tg_ATAC <- RunPCA(Tg_ATAC, features = VariableFeatures(object = Tg_ATAC))
+Tg_ATAC <- FindNeighbors(Tg_ATAC, dims = 1:10, reduction = 'pca')
+Tg_ATAC <- FindClusters(Tg_ATAC, resolution = 0.2)
+Tg_ATAC<- RunTSNE(object = Tg_ATAC,features = VariableFeatures(object = Tg_ATAC) )
+DimPlot(object = Tg_ATAC, reduction = "tsne", label = TRUE) + NoLegend()
+
+pc.ATAC <- getPCA(Tg_ATAC)
+p1 <- ggplot(pc.ATAC, aes(x=PC_1,y=PC_3)) + 
+  geom_point(aes(
+    fill = cluster
+  ), shape=21, size = 1.5)+ 
+  theme_bw(base_size = 14) + 
+  theme(legend.position=c(1,1),legend.justification=c(1,1), 
+        legend.title = element_blank(),
+        legend.background = element_rect(fill=alpha('white', 0)),
+        legend.direction="vertical") + 
+  ylab('PC2') + xlab('PC1') + 
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 12, face="bold")) + 
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 12, face="bold")) +
+  theme(strip.background = element_rect(colour="black", fill="white", 
+                                        size=0.5, linetype="solid")) + 
+  theme(
+    axis.title.x = element_text(size=14, face="bold", hjust = 1),
+    axis.title.y = element_text(size=14, face="bold")
+  ) + 
+  guides(color = FALSE)
+plot(p1)
+##
 
 
 ## Coverage Browser
@@ -214,24 +254,97 @@ CoveragePlot(
   object = Tg_ATAC,
   sep = c("-", "-"),
   #region = gsub('TGME49-', 'TGME49_', rownames(Tg_ATAC)[1:3]),
-  #region = "TGME49_chrIb-516129-529789",
-  region = gsub('TGME49-', 'TGME49_', VariableFeatures(Tg_ATAC)[20]),
+  region = "TGME49_chrIb-516129-529789",
+  #region = gsub('TGME49-', 'TGME49_', VariableFeatures(Tg_ATAC)[20]),
   extend.upstream = 4000,
   extend.downstream = 2000
 )
 
+##Find Markers
+DefaultAssay(Tg_ATAC) <- 'peaks'
+da_peaks <- FindMarkers(
+  object = Tg_ATAC,
+  ident.1 = "0",
+  ident.2 = "1",
+  min.pct = 0.2,
+  test.use = 'LR',
+  latent.vars = 'peak_region_fragments'
+)
 
-region <- StringToGRanges(regions = gsub('TGME49-', 'TGME49_', VariableFeatures(Tg_ATAC)[20]),  sep = c("-", "-"))
+head(da_peaks)
+
+plot1 <- VlnPlot(
+  object = Tg_ATAC,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.4,
+  idents = c("0","1")
+)
+
+plot2 <- FeaturePlot(
+  object = Tg_ATAC,
+  features = rownames(da_peaks)[1],
+  reduction = 'pca',
+  pt.size = 0.4
+)
+
+plot1 | plot2
+
+head(da_peaks)
+
+
+region <- StringToGRanges(regions = gsub('TGME49-', 'TGME49_', rownames(da_peaks)[1]),  sep = c("-", "-"))
 
 xx <- findOverlaps(region, tx_trans)
 tx_trans[xx@to]$gene_id
 
+my.gene <- tx_trans[xx@to]$gene_id[2]
+
 DefaultAssay(Tg_ATAC) <- 'RNA'
-FeaturePlot(
+
+p1 <- FeaturePlot(
   object = Tg_ATAC,
-  features = gsub('_', '-', tx_trans[xx@to]$gene_id),
-  pt.size = 0.1,
+  features = gsub('_', '-', my.gene),
+  pt.size = 0.4,
   max.cutoff = 'q0',
-  ncol = 1
+  ncol = 1,
+  reduction = 'tsne'
+)
+
+
+ggsave(filename="../Output/scClockFigs/RON2_ATAC_activity.pdf",
+       plot=p1,
+       width = 5, height = 5,
+       units = "in", # other options are "in", "cm", "mm"
+       dpi = 300
+)
+
+
+Idents(Tg_ATAC) <- 'seurat_clusters'
+DefaultAssay(Tg_ATAC) <- 'peaks'
+p2 <- CoveragePlot(
+  object = Tg_ATAC,
+  sep = c("-", "-"),
+  #region = gsub('TGME49-', 'TGME49_', rownames(Tg_ATAC)[1:3]),
+  region = region,
+  #region = gsub('TGME49-', 'TGME49_', VariableFeatures(Tg_ATAC)[20]),
+  extend.upstream = 4000,
+  extend.downstream = 2000
+)
+
+ggsave(filename="../Output/scClockFigs/RON2_track_pileup.pdf",
+       plot=p2,
+       width = 5, height = 6,
+       units = "in", # other options are "in", "cm", "mm"
+       dpi = 300
+)
+
+
+p3 <- DimPlot(object = Tg_ATAC, label = TRUE, reduction = 'tsne') + NoLegend()
+
+ggsave(filename="../Output/scClockFigs/tsne_clusters.pdf",
+       plot=p3,
+       width = 5, height = 5,
+       units = "in", # other options are "in", "cm", "mm"
+       dpi = 300
 )
 

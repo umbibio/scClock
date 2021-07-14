@@ -9,23 +9,35 @@ library(matrixStats)
 library(tidyverse)
 library(RColorBrewer)
 library(parallel)
+library(Matrix)
 #library(sctransform)
 
 
 source('./util_funcs.R')
 
 ### Tg
-input.dir.tg <- "../Input/scRNAseqTg/"
-tg.count.file <- "tg.expr.csv"
+
+matrix_dir = "../Input/scRNA_toxo/Tg1_GT1/"
+barcode.path <- paste0(matrix_dir, "barcodes.tsv.gz")
+features.path <- paste0(matrix_dir, "features.tsv.gz")
+matrix.path <- paste0(matrix_dir, "matrix.mtx.gz")
+mat <- readMM(file = matrix.path)
+feature.names = read.delim(features.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+barcode.names = read.delim(barcode.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+
+colnames(mat) = barcode.names$V1
+rownames(mat) = feature.names$V1
+
+tg.count <- as.data.frame(as.matrix(mat))
 
 
-## Reading Tg data
-tg.count <- read.csv(paste(input.dir.tg, tg.count.file, sep = ''))
 
-
-genes <- tg.count$X
-tg.expr <- tg.count[,-1]
-rownames(tg.expr) <- genes
+genes <- rownames(tg.count)
+tg.expr <- tg.count
 
 
 tg.pheno <- data.frame(X = colnames(tg.expr))
@@ -33,12 +45,12 @@ tg.pheno$spp <- 'Tg'
 
 
 # Set initial Seurat clusters
-S.O.tg<- CreateSeuratObject(counts = bd.expr, min.cells = 10, min.features = 100)
+S.O.tg<- CreateSeuratObject(counts = tg.expr, min.cells = 3, min.features = 50)
 
 VlnPlot(S.O.tg, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
 FeatureScatter(S.O.tg, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
 
-S.O.tg <- subset(S.O.tg, subset = nFeature_RNA > 200 & nFeature_RNA < 1200 )
+S.O.tg <- subset(S.O.tg, subset = nFeature_RNA > 20 & nFeature_RNA < 200 )
 S.O.tg <- prep_S.O(S.O.tg)
 
 tg.clust.info <- data.frame(X=as.character(names(S.O.tg$orig.ident)),
@@ -51,12 +63,13 @@ tg.pheno$NAME <- paste(tg.pheno$cells,
 
 colnames(tg.pheno) <- c('Sample', 'spp', 'cluster', 'cells', 'NAME')
 
-tg.ind <- match(colnames(tg.expr), tg.pheno$X)
+tg.ind <- match(colnames(tg.expr), rownames(tg.expr))
 colnames(tg.expr) <- tg.pheno$NAME[tg.ind]
 
 ## down-sample the data to make it more manageable
 set.seed(100)
 S.O.tg.filt <- subset(x = S.O.tg, downsample = 1000)
+S.O.tg.filt <- S.O.tg
 
 saveRDS(S.O.tg.filt, '../Input/scClock/S.O.tg.filt.RData')
 # ## Differential gene expression
