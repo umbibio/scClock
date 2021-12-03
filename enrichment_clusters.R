@@ -33,6 +33,8 @@ for(f in all.files){
 
 all.clust.items <- do.call(rbind, all.clust.items)
 
+saveRDS(all.clust.items, '../Input/BdivCellCycle/RDS/all_clust_items.RData')
+
 filtered.Go <- all.clust.items %>% arrange(phase, Benjamini) %>% distinct() %>%
   group_by(phase) %>% mutate(rank = row_number()) %>%
   dplyr::filter(Benjamini < 0.1 & rank < 30) %>% 

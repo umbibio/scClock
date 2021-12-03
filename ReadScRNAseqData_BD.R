@@ -76,3 +76,4 @@ BD.markers.sig <- BD.markers %>% dplyr::filter(avg_log2FC > 1 & p_val_adj < 0.01
 saveRDS(BD.markers.sig, '../Input/scClock/BD.markers.sig.RData')
 ss <- BD.markers.sig %>% group_by(cluster) %>% summarise(num.DEG = n())
 print(ss)
+

@@ -1,11 +1,8 @@
 ## functions
 ##
-num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
-
-prep_S.O <- function(S.O, res = 0.1, var.features = F, down.sample = F){
-  set.seed(100)
+prep_S.O <- function(S.O, res = 0.1, var.features = F, down.sample = F, smooth.data = F, network = T){
   S.O <- NormalizeData(S.O, normalization.method = "LogNormalize", scale.factor = 10000)
-  S.O <- FindVariableFeatures(S.O, selection.method = "vst", nfeatures = 3000)
+  S.O <- FindVariableFeatures(S.O, selection.method = "vst", nfeatures = 2000)
   if(var.features){
     ## Work on variable features only
     S.O <- subset(S.O, features = VariableFeatures(S.O))
@@ -16,414 +13,49 @@ prep_S.O <- function(S.O, res = 0.1, var.features = F, down.sample = F){
   S.O <- FindNeighbors(S.O, dims = 1:10, reduction = 'pca')
   S.O <- FindClusters(S.O, resolution = res)
   if(down.sample){
+    set.seed(100)
     S.O <- subset(x = S.O, downsample = 800)
     S.O <- FindNeighbors(S.O, dims = 1:13)
     S.O <- FindClusters(S.O, resolution = res)
   }
   S.O <- RunUMAP(S.O, dims = 1:13)
+  if(smooth.data){
+    S.O@meta.data$smooth.id <- rownames(S.O@meta.data)
+    if(network){
+      cat('network smoothing \n')
+      AdjacencyMat <- as.matrix(S.O@graphs$RNA_nn)
+      con <- colSums(AdjacencyMat)
+      con <- unlist(lapply(con, function(x) ifelse(x == 0, 0, 1/x)))
+      
+      ## Scaling adjacancy
+      for(i in 1:ncol(AdjacencyMat)){
+        AdjacencyMat[,i] <- con[i] * AdjacencyMat[,i]
+      }
+      
+      ## Smoothing for a few iterations
+      max.smoothing <- 3
+      alpha <- 0.6
+      scDat <- as.matrix(S.O[["RNA"]]@data)
+      Ft <- scDat
+      for(i in 1:max.smoothing){
+        cat(paste('smoothing iteration', i, '/', max.smoothing))
+        cat('\n')
+        Ft <- alpha * Ft %*% AdjacencyMat + (1 - alpha) * scDat
+      }
+      exprs <- Ft
+    }else{
+      Idents(S.O) <- 'smooth.id'
+      exprs <- AverageExpression(S.O, features = all.genes)
+      exprs <- exprs$RNA
+    }
+    smooth_assay <- CreateAssayObject(counts = exprs)
+    S.O[["smooth"]] <- smooth_assay
+    Idents(S.O) <- 'seurat_clusters'
+    DefaultAssay(S.O) <- "smooth"
+  }
   return(S.O)
 }
 
-
-smooth.S.O <- function(S.O, network = T){
-  S.O@meta.data$smooth.id <- rownames(S.O@meta.data)
-  if(network){
-    cat('network smoothing \n')
-    AdjacencyMat <- as.matrix(S.O@graphs$RNA_nn)
-  
-    con <- colSums(AdjacencyMat)
-    con <- unlist(lapply(con, function(x) ifelse(x == 0, 0, 1/x)))
-    
-    ## Scaling adjacancy
-    for(i in 1:ncol(AdjacencyMat)){
-      AdjacencyMat[,i] <- con[i] * AdjacencyMat[,i]
-    }
-    
-    ## Smoothing for a few iterations
-    max.smoothing <- 3
-    alpha <- 0.3
-    scDat <- as.matrix(S.O[["RNA"]]@data)
-    Ft <- scDat
-    for(i in 1:max.smoothing){
-      cat(paste('smoothing iteration', i, '/', max.smoothing))
-      cat('\n')
-      Ft <- alpha * Ft %*% AdjacencyMat + (1 - alpha) * scDat
-    }
-    exprs <- Ft
-  }else{
-    Idents(S.O) <- 'smooth.id'
-    exprs <- AverageExpression(S.O, features = all.genes)
-    exprs <- exprs$RNA
-  }
-  smooth_assay <- CreateAssayObject(counts = exprs)
-  S.O[["smooth"]] <- smooth_assay
-  #Idents(S.O) <- 'seurat_clusters'
-  #DefaultAssay(S.O) <- "smooth"
-  
-  return(S.O)
-}
-
-
-fitPseudoTime <- function(S.O, reverset.time = F){
-
-  num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
-  ## Fit a pseudo-time curve and align using sync data
-  pc <- getPCA(S.O)
-  sds.data <- getPrinCurve(pc)
-  pc.sds <- left_join(pc, sds.data, by = "Sample")
-
-  Y <- log2(S.O@assays$RNA@data + 1)
-  var.genes <- names(sort(apply(Y, 1, var),decreasing = TRUE))#[1:1000] 
-  Y <- Y[var.genes, ]
-  
-  pt <- sds.data$pt
-  
-  if(reverset.time){
-    pt <- max(pt) - pt
-  }
-  ## Map the pseudo-time to 0-12:20 hours 
-  t <- (12 + 1/3) * ((as.numeric(pt) - min(as.numeric(pt)))/(max(as.numeric(pt)) - min(as.numeric(pt))))
-  sds.data$t <- t
-  
-  ## time-index cells in 20 min intervals and identify cells in each partition
-  ## They will be considered as replicates
-  time.breaks <- seq(1/3, 12 + 1/3, by = 1/3) 
-  time.idx <- rep(0, nrow(sds.data))
-  
-  ind <- which(sds.data$t <= time.breaks[1])
-  time.idx[ind] <- 0
-  
-  for(i in 2:length(time.breaks)){
-    ind <- which(sds.data$t > time.breaks[(i-1)] & sds.data$t <= time.breaks[i])
-    time.idx[ind] <- i - 1
-  }
-  
-  sds.data$time.idx <- time.idx
-  
-  ## Update the time to 20 min increments
-  sds.data$t <- (time.idx) * (1/3)
-  
-  sds.data <- sds.data %>%  
-    group_by(time.idx) %>% mutate(rep = seq(1:n()))
-  
-  
-  ## Run a GAM regression of expression on the pseudo-time
-  ## Use parallel computation to speed things up. 16 cores
-  cat('Fitting the GAM model\n')
-  gam.pval <- mclapply(1:nrow(Y), function(z){
-    d <- data.frame(z=as.numeric(Y[z,]), t=as.numeric(pt))
-    tmp <- gam(z ~ lo(t), data=d)
-    # p <- summary(tmp)[4][[1]][1,5] ## Linear Effects
-    p <- summary(tmp)$anova$`Pr(F)`[2] ## nonlinear effects
-    p
-  }, mc.cores = num.cores)
-  
-  gam.pval <- unlist(gam.pval)
-  names(gam.pval) <- rownames(Y)
-  ## Remove the NA's and get the best fits
-  if(any(is.na(gam.pval))){
-    gam.pval <- gam.pval[-which(is.na(gam.pval))]
-  }
-  
-  gam.pval.adj <- p.adjust(gam.pval, method = 'fdr', n = length(gam.pval))
-  gam.pval.sig <- gam.pval[gam.pval.adj < 0.01] 
-  print(length(gam.pval.sig)) ## number of correlating genes
-  
-  ## Sort the cells on the pt
-  cell.ord <- sds.data$cell.ord
-  
-  topgenes <- names(sort(gam.pval.sig, decreasing = FALSE))  
-  cell.cycle.genes.expr <- as.matrix(S.O@assays$RNA@data[topgenes, cell.ord])
-  #cell.cycle.genes.expr <- as.matrix(S.O.bd.filt@assays$smooth@data[topgenes, cell.ord]) ## smoothed version
-  
-  
-  cell.cycle.genes.df <- data.frame(GeneID = rownames(cell.cycle.genes.expr),
-                                    cell.cycle.genes.expr) %>% 
-    pivot_longer(-c(GeneID), names_to = 'Sample', values_to = 'log2.expr')
-  
-  
-  cell.cycle.genes.df$GeneID <- gsub('-', '_', cell.cycle.genes.df$GeneID)
-  cell.cycle.genes.df <- left_join(cell.cycle.genes.df, sds.data, by = 'Sample')
-  cell.cycle.genes.df$cluster <- S.O@meta.data$seurat_clusters[match(cell.cycle.genes.df$Sample, 
-                                                                        rownames(S.O@meta.data))]
- 
-  ## Filtering to include genes that fit well with pseudo time
-  ##cat('Network smoothing on GAM genes\n')
-  ##S.O.gam <- subset(S.O, features = names(gam.pval.sig))
-  ##S.O.gam <- prep_S.O(S.O.gam)
-  ##S.O.gam.smooth <- smooth.S.O(S.O.gam)
-  
-
-  L <- list(cell.cycle.genes.df = cell.cycle.genes.df, 
-            sds.data = sds.data,
-            gam.genes = names(gam.pval.sig))
-  
-  return(L)
-}
-
-alignWithBdiv <- function(S.O.b,  b.cell.cycle.genes.df, bd.cell.cycle.genes.df, b.sds.data, 
-                          bd.sds.data, bd.lag.time = NA){
-  
-  num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
-  
-  ## As a first pass, fit smoothing splines to both sync and sc and align the splines
-  b.sc.tc.df <- b.cell.cycle.genes.df %>% 
-    transmute(y = log2.expr, tme = t, ind = rep, variable = GeneID)
-  
-  bd.sc.tc.df <- bd.cell.cycle.genes.df %>% 
-    transmute(y = log2.expr, tme = t, ind = rep, variable = GeneID)
-
-  ## Get the common genes
-  comm.genes <- unique(b.sc.tc.df$variable)[which(unique(b.sc.tc.df$variable) %in%
-                                                    unique(bd.sc.tc.df$variable))]
-  ## Fit smoothing splines to both and sample at regular time points (every 20 min from 0 - 12h)
-  b.mu.sc.com <- mclapply(comm.genes, function(v){
-    xx <- b.sc.tc.df[b.sc.tc.df$variable == v, c("y","tme","ind")]
-    mu <-  smooth.spline(x = xx$tme, y = xx$y)
-    mu
-  }, mc.cores = num.cores)
-  
-  b.mu.sc.com.grid <- lapply(b.mu.sc.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
-  
-  bd.mu.sc.com <- mclapply(comm.genes, function(v){
-    xx <- bd.sc.tc.df[bd.sc.tc.df$variable == v, c("y","tme","ind")]
-    mu <-  smooth.spline(x = xx$tme, y = xx$y)
-    mu
-  }, mc.cores = num.cores)
-  
-  bd.mu.sc.com.grid <- lapply(bd.mu.sc.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
-  
-  
-  ## Calculate the cross-correlation between the fitted smoothing splines
-  cc.sc.genes <- mclapply(c(1:length(comm.genes)), function(i){
-    ccc <- rep(0, length(b.mu.sc.com.grid[[i]]$y))
-    for (tau in 0:(length(b.mu.sc.com.grid[[i]]$y) - 1)){
-      circ.ind <- (0:(length(bd.mu.sc.com.grid[[i]]$y) - 1) + tau) %% length(bd.mu.sc.com.grid[[i]]$y) + 1
-      ccc[tau+1] <- sum(b.mu.sc.com.grid[[i]]$y * bd.mu.sc.com.grid[[i]]$y[circ.ind])
-    }
-    ll <- which.max(ccc)
-    ##ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F, lag.max = length(mu.sc.com.grid[[i]]$y))
-    ##ccc <- rep(0, length(mu.sc.com.grid[[i]]$y))
-    ##pos.lag <- which(ll$lag > 0)
-    ##ll <- ll$lag[pos.lag][which.max(ll$acf[pos.lag])]
-    #ll <- ll$lag[which.max(ll$acf)]
-    ll
-  }, mc.cores = num.cores)
-  
-  
-  # 
-  # ## Calculate the cross-correlation between the fitted smoothing splines
-  # cc.sc.genes <- mclapply(c(1:length(comm.genes)), function(i){
-  #   ll <- ccf(b.mu.sc.com.grid[[i]]$y, bd.mu.sc.com.grid[[i]]$y, plot = F, lag.max = length(b.mu.sc.com.grid[[i]]$y))
-  #   ll <- ll$lag[which.max(ll$acf)]
-  #   ll
-  # }, mc.cores = num.cores)
-  # 
-  
-  # Histogram with density plot
-  
-  dd <- data.frame(lag = unlist(cc.sc.genes))
-  
-  ## calculate the optimal lag time
-  den <- density(dd$lag)
-  
-  lag.time <- (ceiling(den$x[which.max(den$y)]) + bd.lag.time - 1) %% length(bd.mu.sc.com.grid[[i]]$y) + 1
-  
-  adjusted.time <- (b.sds.data$time.idx * 1/3) -  sort(unique(b.sds.data$time.idx) * 1/3)[lag.time]
-  neg.ind <- ifelse(adjusted.time < 0, T, F)
-  adjusted.time[neg.ind] <- adjusted.time[neg.ind] + (12 + 1/3)
-  b.sds.data$adj.time <-  adjusted.time
-  
-  ## create fine-resolution 20 min cluster of cells
-  clusters <- paste('C', 1:length(unique(b.sds.data$adj.time)), sep = '')
-  b.sds.data$cluster <- clusters[as.integer((b.sds.data$adj.time) * 3 + 1)]
-  
-  
-  ## Generate shifted curves
-  time.breaks <- seq(1/3, 12 + 1/3, by = 1/3) 
-  time.idx <- rep(0, nrow(b.sds.data))
-  
-  ind <- which(b.sds.data$adj.time <= time.breaks[1])
-  time.idx[ind] <- 0
-  
-  for(i in 2:length(time.breaks)){
-    ind <- which(b.sds.data$adj.time > time.breaks[(i-1)] & b.sds.data$adj.time <= time.breaks[i])
-    time.idx[ind] <- i - 1
-  }
-  
-  b.sds.data$adj.time.idx <- time.idx
-  
-  
-  b.sds.data <- b.sds.data %>%  ungroup() %>%
-    group_by(adj.time.idx) %>% mutate(rep = seq(1:n()))
-  
-  b.sds.data <- as.data.frame(b.sds.data)
-  rownames(b.sds.data) <- b.sds.data$Sample
-  
-  ## Add the new clusters as meta-data
-  S.O.b <- AddMetaData(S.O.b, b.sds.data)
-  
-  pc <- S.O.b[['pca']]@cell.embeddings
-  pc <- data.frame(pc) %>% dplyr::mutate(Sample = rownames(pc))
-  pc$cluster <- S.O.b$cluster
-  
-  
-  
-  pc.sds.adj <- left_join(pc, b.sds.data, by = "Sample")
-  
-  lvs <- paste('C', unique(sort(as.numeric(gsub('C', '', pc.sds.adj$cluster.y)))), sep = '')
-  pc.sds.adj$cluster.y <- factor(pc.sds.adj$cluster.y, levels = lvs)
-  
-  
-  b.cell.cycle.genes.df.adj <- left_join(b.cell.cycle.genes.df, b.sds.data[,c('Sample', 'adj.time', 
-                                                                              'adj.time.idx', 'rep', 'cluster')], 
-                                          by = 'Sample')
-  b.sc.tc.df.adj <- b.cell.cycle.genes.df.adj %>% 
-    transmute(y = log2.expr, tme = adj.time, ind = rep.y, variable = GeneID)
-  
-  
-  L <- list(S.O.bd.update = S.O.b,
-            mu.sync.com.grid = NULL,
-            mu.sc.com.grid = b.mu.sc.com.grid,
-            pc.sds.adj = pc.sds.adj,
-            dd = dd,
-            den = den,
-            lag.time = lag.time,
-            cell.cycle.genes.df.adj = b.cell.cycle.genes.df.adj,
-            sync.tc.df = NULL,
-            sc.tc.df.adj = b.sc.tc.df.adj)
-  
-  return(L)
-}
-
-alignBdivPseudoTimeWithBulkSync <- function(S.O.bd, bd.cell.cycle.genes.df, sds.data, bd.tc.logCPM, lag.time = NA){
-  
-  num.cores <- detectCores(all.tests = FALSE, logical = TRUE)
-  
-  ## As a first pass, fit smoothing splines to both sync and sc and align the splines
-  sc.tc.df <- bd.cell.cycle.genes.df %>% 
-    transmute(y = log2.expr, tme = t, ind = rep, variable = GeneID)
-  
-  sync.tc.df <- bd.tc.logCPM %>% 
-    transmute(y = as.numeric(expr), 
-              tme = as.numeric(time_point), 
-              ind = rep, variable = GeneID)
-  
-  ## Get the common genes
-  comm.genes <- unique(sync.tc.df$variable)[which(unique(sync.tc.df$variable) %in%
-                                                    unique(sc.tc.df$variable))]
-  ## Fit smoothing splines to both and sample at regular time points (every 20 min from 0 - 12h)
-  mu.sync.com <- mclapply(comm.genes, function(v){
-    xx <- sync.tc.df[sync.tc.df$variable == v, c("y","tme","ind")]
-    mu <-  smooth.spline(x = xx$tme, y = xx$y)
-    mu
-  }, mc.cores = num.cores)
-  
-  mu.sync.com.grid <- lapply(mu.sync.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
-  
-  mu.sc.com <- mclapply(comm.genes, function(v){
-    xx <- sc.tc.df[sc.tc.df$variable == v, c("y","tme","ind")]
-    mu <-  smooth.spline(x = xx$tme, y = xx$y)
-    mu
-  }, mc.cores = num.cores)
-  
-  mu.sc.com.grid <- lapply(mu.sc.com, function(mu) predict(mu, seq(0, 12, by = 1/3)))
-  
-  ## Calculate the cross-correlation between the fitted smoothing splines
-  cc.sc.sync.genes <- mclapply(c(1:length(comm.genes)), function(i){
-    # ccc <- rep(0, length(mu.sc.com.grid[[i]]$y))
-    # for (tau in 0:(length(mu.sc.com.grid[[i]]$y) - 1)){
-    #   circ.ind <- (0:(length(mu.sync.com.grid[[i]]$y) - 1) + tau) %% length(mu.sync.com.grid[[i]]$y) + 1
-    #   ccc[tau+1] <- sum(mu.sc.com.grid[[i]]$y * mu.sync.com.grid[[i]]$y[circ.ind])
-    # }
-    # ll <- which.max(ccc)
-    ll <- ccf(mu.sc.com.grid[[i]]$y, mu.sync.com.grid[[i]]$y, plot = F, lag.max = length(mu.sc.com.grid[[i]]$y))
-    pos.ind <- which(ll$lag >= 0)
-    ll <- ll$lag[pos.ind][which.max(ll$acf[pos.ind])]
-    ll
-  }, mc.cores = num.cores)
-  
-  
-  # Histogram with density plot
-  
-  dd <- data.frame(lag = unlist(cc.sc.sync.genes))
-  
-  ## calculate the optimal lag time
-  den <- density(dd$lag)
-  
-  
-  ## If already passed as argument, do not calculate
-  if(is.na(lag.time)){
-    lag.time <- ceiling(den$x[which.max(den$y)])
-  }
-
-  adjusted.time <- (sds.data$time.idx * 1/3) -  sort(unique(sds.data$time.idx) * 1/3)[lag.time]
-  neg.ind <- ifelse(adjusted.time < 0, T, F)
-  adjusted.time[neg.ind] <- adjusted.time[neg.ind] + (12 + 1/3)
-  sds.data$adj.time <-  adjusted.time
-  
-  ## create fine-resolution 20 min cluster of cells
-  clusters <- paste('C', 1:length(unique(sds.data$adj.time)), sep = '')
-  sds.data$cluster <- clusters[as.integer((sds.data$adj.time) * 3 + 1)]
-  
-  
-  ## Generate shifted curves
-  time.breaks <- seq(1/3, 12 + 1/3, by = 1/3) 
-  time.idx <- rep(0, nrow(sds.data))
-  
-  ind <- which(sds.data$adj.time <= time.breaks[1])
-  time.idx[ind] <- 0
-  
-  for(i in 2:length(time.breaks)){
-    ind <- which(sds.data$adj.time > time.breaks[(i-1)] & sds.data$adj.time <= time.breaks[i])
-    time.idx[ind] <- i - 1
-  }
-  
-  sds.data$adj.time.idx <- time.idx
-  
-  
-  sds.data <- sds.data %>%  ungroup() %>%
-    group_by(adj.time.idx) %>% mutate(rep = seq(1:n()))
-  
-  sds.data <- as.data.frame(sds.data)
-  rownames(sds.data) <- sds.data$Sample
-  
-  ## Add the new clusters as meta-data
-  S.O.bd <- AddMetaData(S.O.bd, sds.data)
-  
-  pc <- S.O.bd[['pca']]@cell.embeddings
-  pc <- data.frame(pc) %>% dplyr::mutate(Sample = rownames(pc))
-  pc$cluster <- S.O.bd$cluster
-  
-  
-  
-  pc.sds.adj <- left_join(pc, sds.data, by = "Sample")
-  
-  lvs <- paste('C', unique(sort(as.numeric(gsub('C', '', pc.sds.adj$cluster.y)))), sep = '')
-  pc.sds.adj$cluster.y <- factor(pc.sds.adj$cluster.y, levels = lvs)
-  
-
-  bd.cell.cycle.genes.df.adj <- left_join(bd.cell.cycle.genes.df, sds.data[,c('Sample', 'adj.time', 
-                                                                              'adj.time.idx', 'rep', 'cluster')], 
-                                          by = 'Sample')
-  
-  bd.cell.cycle.genes.df.adj <- left_join(bd.cell.cycle.genes.df.adj, pc, by = "Sample")
-  sc.tc.df.adj <- bd.cell.cycle.genes.df.adj %>% 
-    transmute(y = log2.expr, tme = adj.time, ind = rep.y, variable = GeneID)
-
-  L <- list(S.O.bd.update = S.O.bd,
-            mu.sync.com.grid = mu.sync.com.grid,
-            mu.sc.com.grid = mu.sc.com.grid,
-            pc.sds.adj = pc.sds.adj,
-            dd = dd,
-            den = den,
-            lag.time = lag.time,
-            cell.cycle.genes.df.adj = bd.cell.cycle.genes.df.adj,
-            sync.tc.df = sync.tc.df,
-            sc.tc.df.adj = sc.tc.df.adj)
-  
-  return(L)
-}
 
 getNormExpr <- function(S.O){
   expr.norm <- as.matrix(S.O[["RNA"]]@data)
@@ -457,14 +89,9 @@ getPCA <- function(S.O){
   return(pc)
 }
 
-getPrinCurve <- function(pc.dat){
-  ## Initial elliptical fit
-  ell <- Ellipsefit(pc.dat,PC_1, PC_2, coords = TRUE, bbox = TRUE)
-  coord <- ell$Coord
-  
-  x <- as.matrix(pc.dat[,c(1,2)])
-  #fit <- principal_curve(x, start = as.matrix(coord))
-  fit <- principal_curve(x, start = as.matrix(coord), smoother = "periodic_lowess", maxit = 0)
+getPrinCurve <- function(pc.db){
+  x <- as.matrix(pc.bd[,c(1,2)])
+  fit <- principal_curve(x)
   pt <- fit$lambda
   
   ## reversing the order of time
@@ -480,19 +107,6 @@ getPrinCurve <- function(pc.dat){
                        sc2 = fit$s[,2])
   
   return(s.data)
-}
-
-wiskerPlot <- function(S.O){
-  pc.dat <- getPCA(S.O)
-  ## Initial elliptical fit
-  ell <- Ellipsefit(pc.dat,PC_1, PC_2, coords = TRUE, bbox = TRUE)
-  coord <- ell$Coord
-  
-  x <- as.matrix(pc.dat[,c(1,2)])
-  #fit <- principal_curve(x, start = as.matrix(coord))
-  fit <- principal_curve(x, start = as.matrix(coord), smoother = "periodic_lowess", maxit = 0)
-
-  return(list(pc = pc.dat, fit = fit))
 }
 
 getSlingShot <- function(S.O, method = 'pca'){
@@ -551,11 +165,6 @@ splineSmeFits <- function(fits, variables){
                                          n = as.numeric(colnames(x$coefficients))[ncol(x$coefficients)] - 
                                            as.numeric(colnames(x$coefficients))[1] + 1, 
                                          method = "natural")) 
-
-  mus <- lapply(fits, function(x) spline(x = as.numeric(colnames(x$coefficients)),
-                                         y = x$coefficients[1,], 
-                                         method = "natural")) 
-  
   mus.y <- unlist(lapply(mus, `[[`, 2))
   mus.x <- unlist(lapply(mus, `[[`, 1))
   lens  <- unlist(lapply(lapply(mus, `[[`, 1), length))
@@ -567,38 +176,6 @@ splineSmeFits <- function(fits, variables){
   return(mus)
   
 }
-
-## spline the fitted values to get the means
-splinefunctionSmeFits <- function(fits, variables, extend = F){
-  musfun <- lapply(fits, function(x) splinefun(x = as.numeric(colnames(x$coefficients)),
-                                         y = x$coefficients[1,], 
-                                         method = "natural")) 
-  if(extend){
-    mus <- lapply(musfun, function(ff){
-      x <- seq(0, 12, by = 1/3)
-      y <- ff(x)
-      mu = list(x = x, y = y)
-    })
-  }else{
-    mus <- lapply(musfun, function(ff){
-      x <- as.numeric(colnames(x$coefficients))
-      y <- ff(x)
-      mu = list(x = x, y = y)
-    })
-  }
-  
-  mus.y <- unlist(lapply(mus, `[[`, 2))
-  mus.x <- unlist(lapply(mus, `[[`, 1))
-  lens  <- unlist(lapply(lapply(mus, `[[`, 1), length))
-  
-  mus <- data.frame(variable = rep(variables, times = lens),
-                    tme = mus.x,
-                    y = mus.y)
-  
-  return(mus)
-  
-}
-
 
 ## spline the fitted values to get the means
 smoothSplineSmeFits <- function(fits, variables, extend = F){
@@ -625,57 +202,6 @@ smoothSplineSmeFits <- function(fits, variables, extend = F){
   
 }
 
-
-## spline the fitted values to get the means
-smoothSplineSmeFitsConfBand <- function(fits, variables){
-  ## Fitting the estimated kernel with smooth splines
-  
-  mus <- lapply(fits, function(x) 
-    smooth.spline(x = as.numeric(colnames(x$coefficients)), 
-                  y = x$coefficients[1,])) 
-  # if(extend){
-  #   mus <- lapply(mus, function(x)
-  #     predict(x, seq(0, 12, by = 1/3)))
-  # }
-  
-  mus.y <- unlist(lapply(mus, `[[`, 2))
-  mus.x <- unlist(lapply(mus, `[[`, 1))
-  lens  <- unlist(lapply(lapply(mus, `[[`, 1), length))
-  
-  
-  ## Fitting confidence bands
-  mu.variances <- mclapply(fits, function(fit){
-    tryCatch(
-      expr = {
-        mu.variance <- diag(vcov(fit))
-        mu.variance[which(mu.variance < 0)] <- 0
-        upper.band <- smooth.spline(x = as.numeric(colnames(fit$coefficients)), 
-                                    y = fit$coefficients[1, ] + 1.96 * sqrt(mu.variance)) 
-        lower.band <- smooth.spline(x = as.numeric(colnames(fit$coefficients)),
-                                    y = fit$coefficients[1, ] - 1.96 * sqrt(mu.variance))
-        return(list(lb = lower.band, ub = upper.band))
-      },
-      error = function(v){
-        message(paste('error:', v))
-      }
-    ) 
-    
-  }, mc.cores = num.cores) 
-  #err.ind <- which(unlist(mclapply(mu.variances, function(x) is.null(x$lb),  mc.cores = num.cores)))
-  
-  lbs <- unlist(lapply(lapply(mu.variances, `[[`, 1), `[[`, 2))
-  ubs <- unlist(lapply(lapply(mu.variances, `[[`, 2), `[[`, 2))
-  
-  mus <- data.frame(variable = rep(variables, times = lens),
-                    tme = mus.x,
-                    y = mus.y,
-                    lb = lbs,
-                    ub = ubs)
-  
-   
-  return(mus)
-  
-}
 
 plot.sme <-function(fit, v, conf = T){
   mu <- spline(x = as.numeric(colnames(fit$coefficients)), 
@@ -721,8 +247,8 @@ plot.sme <-function(fit, v, conf = T){
                       maxColorValue = 255), border = NA)
   }
  
-  axis(1, seq(min(fit$data$tme), max(fit$data$tme), length = 7),
-       labels = seq(0, 6), font=2)
+  axis(1, seq(min(fit$data$tme), max(fit$data$tme), length = 13),
+       labels = seq(0, 12), font=2)
   mtext(side=1, line=2, "Time (h)", col="black", font=2,cex=1.1)
   mtext(side=2, line=2, "log2(expr)", col="black", font=2,cex=1.1)
   title(main = v , cex.lab = 1.2, line = 0.5)
@@ -791,12 +317,10 @@ matchClustersToPhase <- function(hc_dtw.df, markers.sig){
   overlap[is.na(overlap)] <- 0
   overlap <- overlap %>% pivot_longer(-c('cluster'), names_to = 'markers', values_to = 'percent')
   
-  overlap$markers[gsub('.*_', '', overlap$markers) == 0] <- 'Ph0'
-  overlap$markers[gsub('.*_', '', overlap$markers) == 3] <- 'Ph1'
-  overlap$markers[gsub('.*_', '', overlap$markers)== 2] <- 'Ph3'
-  overlap$markers[gsub('.*_', '', overlap$markers) == 1] <- 'Ph2'
-  overlap$markers[gsub('.*_', '', overlap$markers)== 4] <- 'Ph4'
-  overlap$markers[gsub('.*_', '', overlap$markers)== 5] <- 'Ph5'
+  overlap$markers[overlap$markers == 0] <- 'G1a'
+  overlap$markers[overlap$markers == 3] <- 'G1b'
+  overlap$markers[overlap$markers == 2] <- 'G1c'
+  overlap$markers[overlap$markers == 1] <- 'S/M'
   
   
   overlap$cluster <- factor(overlap$cluster, levels = unique(sort(overlap$cluster)))
@@ -873,6 +397,7 @@ processCount <- function(input.dir, filename, tt, rr, down.sample = T){
     S.O <- subset(x = S.O, downsample = 2000)
   }
   
+  names(S.O$orig.ident)
   pheno <- data.frame(Sample = names(S.O$orig.ident))
   spp <- paste('BDiv', tt, rr, sep = '')
   pheno$spp <- spp
@@ -886,7 +411,6 @@ processCount <- function(input.dir, filename, tt, rr, down.sample = T){
   
   return(L)
 }
-
 
 mergeS.O <- function(L){
   num.objs <- length(L)
@@ -904,55 +428,29 @@ mergeS.O <- function(L){
   return(S.O.merge)
 }
 
-
-processeMergedS.O <- function(S.O.list, orthologs, data.ind = NA, ref.ind = NA, res = 0.2, SC = FALSE){
+processeMergedS.O <- function(S.O.list, file.info = NA, ref.ind = NA, res = 0.2, SC = FALSE){
   ## Merge the S.O, add metadata, and re-split by spp and update the S.O.list
-  if(is.na(data.ind[1])){
-    data.ind = 1:length(S.O.list)
+  if(is.na(ref.ind)){
+    ref.ind = 1:length(S.O.list)
   }
   
-  S.O.merge <- mergeS.O(S.O.list[data.ind])
+  S.O.merge <- mergeS.O(S.O.list[ref.ind])
   S.O.list <- SplitObject(S.O.merge, split.by = "spp")
-
   
   if(SC){
     S.O.list <- lapply(X = S.O.list, FUN = SCTransform)
     features <- SelectIntegrationFeatures(object.list = S.O.list, nfeatures = 3000)
     S.O.list <- PrepSCTIntegration(object.list = S.O.list, anchor.features = features)
-    
-    ## Reference-based
-    if(!is.na(ref.ind[1])){
-      print('using reference index')
-      reference_dataset <- ref.ind
-      anchors <- FindIntegrationAnchors(object.list = S.O.list, normalization.method = "SCT", 
-                                             anchor.features = features, reference = reference_dataset)
-    }else{
-      
-      anchors <- FindIntegrationAnchors(object.list = S.O.list, normalization.method = "SCT", 
-                                        anchor.features = features)
-    }
+    anchors <- FindIntegrationAnchors(object.list = S.O.list, normalization.method = "SCT", 
+                                      anchor.features = features)
     S.O.integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT")
   }else{
     S.O.list <- lapply(X = S.O.list, FUN = function(x) {
-      ## Extract the count data
-      
-      ## extract the count data from each as.matrix(S.O.list[[1]][["RNA"]]@data)
-      ## Replace genes with Bdiv orthologous when needed
-      ## recreate the new Seurat object.
       x <- NormalizeData(x)
-      x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+      x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
     })
     features <- SelectIntegrationFeatures(object.list = S.O.list)
-
-    ## Reference-based
-    if(!is.na(ref.ind[1])){
-      print('using reference index')
-      reference_dataset <- ref.ind
-      anchors <- FindIntegrationAnchors(object.list = S.O.list, 
-                                        anchor.features = features, reference = reference_dataset)
-    }else{
-      anchors <- FindIntegrationAnchors(object.list = S.O.list, anchor.features = features)
-    }
+    anchors <- FindIntegrationAnchors(object.list = S.O.list, anchor.features = features)
     S.O.integrated <- IntegrateData(anchorset = anchors)
   }
   

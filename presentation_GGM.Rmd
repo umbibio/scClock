@@ -1,0 +1,247 @@
+---
+title: "Babesia Cell Cycle"
+output: html_document
+#author: "Kourosh Zarringhalam"
+header-includes: \usepackage{xcolor}
+
+date: "`r format(Sys.time(), '%d %B %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+```{r loadLibs, echo=FALSE, message=FALSE, warning=FALSE}
+library(openxlsx)
+library(ggplot2)
+library(ggfortify)
+library(jcolors)
+require(gridExtra)
+library(grid)
+library(matrixStats)
+library(tidyverse)
+library(RColorBrewer)
+library(sctransform)
+library(glassoFast)
+library(igraph)
+library(ggraph)
+library(graphlayouts)
+library(fdrtool)
+library(parallel)
+library(sme)
+
+source('util_funcs.R')
+
+all.clust.items <- readRDS('../Input/BdivCellCycle/RDS/all_clust_items.RData')
+file.info <- readRDS('../Input/BdivCellCycle/RDS/file_info.RData')
+bd_network.opt <- readRDS('../Input/BdivCellCycle/RDS/bd_network_opt.RData')
+e.l.regs.clust <- readRDS('../Input/BdivCellCycle/RDS/e_l_regs_clust.RData')
+putative.clust.regs <- readRDS('../Input/BdivCellCycle/RDS/putative_clust_regs.RData')
+sc.tc.df.adj <- readRDS('../Input/scClock/sc.tc.df.adj.RData')
+sc.tc.fits <- readRDS("../Input/scClock/sme_fits_sc_tc_20min.RData")
+```
+
+
+### Cell Cycle phases
+
+1. Cluster of cells and expression of corresponding markers along the fitted pseudo-time
+    - Start identified using the synchronized RNA-Seq data
+    - Clusters automatically identified
+    - Markers of each clusters identified
+    - Markers re-clustered based on expression curve shape
+    
+![cluster markers](../Input/BdivCellCycle/Figures/cluster_markers.png)
+
+1. Should we re label the phases?
+    - Can merged data help?
+    - Data from Malaria and Toxoplasma atlas combined with Babesia data
+
+![combined merged data](../Input/BdivCellCycle/Figures/Integrated_scRNAseq_all.png)
+![split merged data](../Input/BdivCellCycle/Figures/Integrated_scRNAseq_split.png)
+
+### Enrichment Analysis of gene clusters.
+
+1. Genes in each cluster were mapped to their Toxoplasma orthologs (when available)
+1. GO term enrichment performed using available terms on toxodb 
+
+```{r GO_analysis, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=10}
+
+filtered.Go <- all.clust.items %>% arrange(phase, Benjamini) %>% distinct() %>%
+  group_by(phase) %>% mutate(rank = row_number()) %>%
+  dplyr::filter(Benjamini < 0.1 & rank < 30) %>% 
+  arrange(phase, Benjamini) 
+
+
+filtered.Go$phase <- factor(filtered.Go$phase)
+filtered.Go$ID <- factor(filtered.Go$ID, level=unique(filtered.Go$ID))
+filtered.Go$Name <- factor(filtered.Go$Name, level=unique(filtered.Go$Name))
+## Category of contrasts
+p <- ggplot(filtered.Go, aes(x = phase, y = Name)) + 
+  geom_point(aes(colour = "red", size = -log(Benjamini))) +
+  theme_bw(base_size = 14) +
+  #scale_colour_gradient(limits=c(0, 0.01), low="red") +
+  ylab(NULL) + xlab(NULL) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10, face="bold")) + 
+  theme(axis.text.y = element_text(angle = 0, hjust = 1, size = 10, face="bold")) +
+  theme(legend.position="none") +
+  theme(strip.background = element_rect(colour="black", fill="white", 
+                                        size=0.5, linetype="solid")) + guides(color = FALSE)
+
+plot(p)
+```
+
+### Reconstructing the co-expression network using Gaussian Graphical Models (GGMs)
+
+1.  scRNA data was used to estimate the empirical co-variance matrix $S$.
+
+2.  A Gaussian Graphical model was used to estimate the:
+
+    -   Sparse covariance matrix $\Sigma$.
+    -   Precision matrix $\Theta$.
+    -   Partial correlation matrix $R$.
+
+$$
+\mathcal{L} = -\log(\det(\Theta)) + tr(S\Theta) + \rho ||\Theta||_1
+$$
+
+3. The estimated partial correlation matrix $R$ can be used to reconstruct the network.
+
+4. The entries of the matrix $r_{ij}$ encode **direct** correlations between genes $i$ and $j$. If $r_{ij} > 0$ there is an edge between genes $i$ and $j$
+
+![GGM](../Input/BdivCellCycle/Figures/GGM.png)
+
+4.  The parameter $\rho$ controls the sparsity of the network (larger $\rho$ results in less edges).
+
+5.  A path of $\rho$ values in $(0, 1)$ was used to construct networks at various degrees of sparsity.
+
+6.  The scale-free property of each network was estimated.
+
+    -   Node connectivity of scale-free network follows the power law (exponential decay in node degrees).
+    -   This means that there are few nodes with many connections (hubs) and many nodes with little connection.
+    -   Social networks and some biological networks (e.g., PPIs) seem to be scale-free.
+
+
+![scale free networks](../Input/BdivCellCycle/Figures/scale_free.png)
+
+```{r GGM, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+
+## Fitting the rho/r2 curve with smooth splines
+file.info.filt <- file.info %>% dplyr::filter(!is.na(r2))
+spline.fit <- smooth.spline(x = file.info.filt$rho, 
+                            y = file.info.filt$r2,lambda = 0.0005)
+
+## Compute the derivatives of the fitted splines
+s.0 <- predict(spline.fit, spline.fit$x, deriv=0)
+s.1 <- predict(spline.fit, spline.fit$x, deriv=1)
+s.derv <- data.frame(s0=s.0$y, s1=s.1$y)
+
+## Get the location of the extrema
+locs <- rle(den.sign <- sign(s.derv$s1))
+plot(file.info.filt$rho, file.info.filt$r2, pch = 20, xlab = 'rho', ylab = 'r^2')
+ind.high.r2 <- which(file.info$r2 > 0.8)
+points(file.info.filt$rho[ind.high.r2], file.info.filt$r2[ind.high.r2], pch = 20, col = 'red')
+points(s.0$x, s.0$y, type = 'l', lwd=2,  col = 'blue')
+```
+
+### Optimal co-expression network
+
+1. Edges that appeared in at least $20\%$ of networks with $r^2 > 0.8$ were retained as **consistent**.
+
+```{r optimal_network, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+d <- degree(bd_network.opt, mode="all")
+
+tmp <- rle(sort(d))
+ff <- lm(log(tmp$lengths)~log(tmp$values))
+ff.sum <- summary(ff)
+
+plot(log(tmp$lengths)~log(tmp$values), pch = 20, xlab = 'log(degree)', ylab = 'log(freq)')
+abline(b = ff.sum$coefficients[2], a =  ff.sum$coefficients[1], col='red')
+```
+
+### Identification of putative regulators
+1. Each node with large degree distribution (hub) node was considered as a potential "regulator".
+
+1. The targets of each putative regulator were matched against gene cluster markers and the degree of the overlap was quantified with Fisher's exact test.
+
+
+```{r putative_regulators, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+
+cat('top 2 overall regulators\n')
+putative.clust.regs %>% ungroup() %>% 
+  dplyr::select(src, num.trg, phase, clust.gene.num, overlap, qval, proportion, Product.Description) %>% 
+  group_by(phase) %>% slice_max(order_by = proportion, n = 3)
+
+cat('\ntop 2 know regulators\n')
+putative.clust.regs %>% ungroup() %>% dplyr::filter(!is.na(Pf)) %>%
+  dplyr::select(src, num.trg, phase, clust.gene.num, overlap, qval, 
+                proportion, Pf, GeneName, Product.Description) %>% 
+  group_by(phase) %>% slice_max(order_by = proportion, n = 3)
+```
+
+
+```{r putative_regulators_network, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+got_palette <- c("#1A5878", "#C44237", "#AD8941", "#E99093", "#50594B")
+
+getNetFromVert <- function(g.obj,nds, reg.info){
+  all.edges <- get.edgelist(g.obj)
+  nds.edges <- unique(c(which(all.edges[,1] %in% nds), which(all.edges[,2] %in% nds)))
+  nodes <- data.frame(GeneID = unique(c(all.edges[nds.edges, ])))
+  reg.info$src <- gsub('_', '-', reg.info$src)
+  
+  nodes <- cbind(nodes, reg.info[match(nodes$GeneID, reg.info$src),])
+  
+  nodes$reg <- ifelse(nodes$GeneID %in% nds, 'Y', 'N')
+  g.nds <- graph_from_data_frame(d = data.frame(all.edges[nds.edges, ]), vertices = nodes, directed = F)
+  node.size <- degree(g.nds, v = V(g.nds))
+  g.nds <- set_vertex_attr(g.nds, 'size', index = V(g.nds), node.size)
+  return(g.nds)
+}
+
+putative.clust.regs.known <- putative.clust.regs %>% dplyr::filter(!is.na(Pf))
+nds <- gsub('_', '-',unique(putative.clust.regs.known$src))
+g.nds <- getNetFromVert(bd_network.opt,nds,putative.clust.regs.known)
+
+ggraph(g.nds,layout = "stress")+
+  #geom_edge_link0(aes(edge_width = weight),edge_colour = "grey66")+
+  geom_edge_link0(edge_colour = "grey66")+
+  geom_node_point(aes(fill = phase, size = size),shape=21)+
+  geom_node_text(aes(filter = reg == 'Y', label = name),family="serif")+
+  scale_fill_manual(values = got_palette)+
+  scale_edge_width(range = c(0.2,3))+
+  scale_size(range = c(1,6))+
+  theme_graph()+
+  theme(legend.position = "right")
+
+```
+
+### Expression plots
+1. As before, expression plots were generated using a mixed-effect spline model along the pseudo-time progression
+
+```{r expression_curves, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+sc.tc.df.adj <- readRDS('../Input/scClock/sc.tc.df.adj.RData')
+sc.tc.fits <- readRDS("../Input/scClock/sme_fits_sc_tc_20min.RData")
+vs = gsub('-', '_', nds)
+
+par(mfrow = c(4,4))
+for(v in vs){
+  ind <- which(unique(sc.tc.df.adj$variable) == v)
+  plot.sme(sc.tc.fits[[ind]], v)
+}
+
+```
+
+### Putative regulators
+
+```{r regulator_list, eval = T, echo = F, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+tb <- putative.clust.regs %>% ungroup() %>% dplyr::filter(!is.na(Pf)) %>%
+  dplyr::select(src, phase,Pf, GeneName, annotation, Product.Description) %>% 
+  group_by(src) %>% summarise(phase = phase[1], Pf = Pf[1], 
+                              GeneName = gsub('NA', '', paste(unique(GeneName), collapse  = ',')), 
+                              annotation = gsub('NA', '', paste(unique(annotation), collapse  = ',')), 
+                              Product.Description = Product.Description[1])
+
+print(tb, width = Inf)
+```
+
+
+1. To check expression of genes in single cells use: [https://poisson.math.umb.edu/kouroshz/app/sc-expression-profiler](https://poisson.math.umb.edu/kouroshz/app/sc-expression-profiler)

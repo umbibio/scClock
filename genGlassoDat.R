@@ -15,7 +15,7 @@ library(ggraph)
 library(graphlayouts)
 
 
-
+source('util_funcs.R')
 
 ## Read the WT bdiv and create an initial Seurat object
 file.counts <- read.csv("../Input/scRNAseqBdivCS/bd0hr_count.csv")
@@ -110,4 +110,52 @@ Ft.scale <- scale(t(Ft))
 S <- cov(Ft.scale)
 
 saveRDS(S, '../Input/scClock/S_800.RData')
+
+
+
+####
+
+### b. divergens
+input.dir.bdiv <- "../Input/scRNAseqBdiv/"
+bdiv.count.file <- "bdiv.expr.csv"
+## Reading b. divergense data
+bdiv.count <- read.csv(paste(input.dir.bdiv, bdiv.count.file, sep = ''))
+genes <- bdiv.count$X
+bd.expr <- bdiv.count[,-1]
+rownames(bd.expr) <- genes
+# Set initial Seurat clusters
+S.O.bd <- CreateSeuratObject(counts = bd.expr, min.cells = 10, min.features = 100)
+S.O.bd <- subset(S.O.bd, subset = nFeature_RNA > 200 & nFeature_RNA < 1200 )
+S.O.bd <- prep_S.O(S.O.bd, res = 0.1, var.features = T, down.sample = T, smooth.data = T, network = T)
+Ft.bd <- S.O.bd@assays$smooth@data
+Ft.bd.scale <- scale(t(Ft.bd))
+S.bd <- cov(Ft.bd.scale)
+
+saveRDS(S.bd, '../Input/scClock/glasso/S_bd_smooth_2000.RData')
+
+### T. gondii
+input.dir.tg <- '../Input/scRNAseqToxoAtlas/kz/'
+rh384.expr.file <- 'rh384_expression_filtered.csv'
+## Reading T. gondii data
+rh384.expr <- read.csv(paste(input.dir.tg, rh384.expr.file, sep = ''))
+
+processCounts <- function(expr){
+  cols <- expr[,1]
+  expr <- t(expr[,-1])
+  colnames(expr) <- cols
+  return(expr)
+}
+
+rh384.expr <- processCounts(rh384.expr)
+# Set initial Seurat clusters
+S.O.tg <- CreateSeuratObject(counts = rh384.expr, min.cells = 10, min.features = 100)
+#VlnPlot(S.O.tg, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+#FeatureScatter(S.O.tg, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+S.O.tg <- subset(S.O.tg, subset = nFeature_RNA > 200 & nFeature_RNA < 2000 )
+S.O.tg <- prep_S.O(S.O.tg, res = 0.1, var.features = T, down.sample = T, smooth.data = T, network = T)
+Ft.tg <- S.O.tg@assays$smooth@data
+Ft.tg.scale <- scale(t(Ft.tg))
+S.tg <- cov(Ft.tg.scale)
+saveRDS(S.tg, '../Input/scClock/glasso/S_tg_smooth_2000.RData')
+
 
